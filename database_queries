@@ -1,0 +1,87 @@
+--------------total db size--------------
+SELECT sys.databases.name,  
+CONVERT(VARCHAR,SUM(size)*8/1024)+' MB' AS [Total disk space]  
+FROM sys.databases  
+JOIN sys.master_files  
+ON sys.databases.database_id=sys.master_files.database_id  
+GROUP BY sys.databases.name  
+ORDER BY sys.databases.name
+
+
+  -------------------database size and free space---------------
+CREATE TABLE #FileSize
+(dbName NVARCHAR(128), 
+    FileName NVARCHAR(128), 
+    type_desc NVARCHAR(128),
+    CurrentSizeMB DECIMAL(10,2), 
+    FreeSpaceMB DECIMAL(10,2)
+);
+    
+INSERT INTO #FileSize(dbName, FileName, type_desc, CurrentSizeMB, FreeSpaceMB)
+exec sp_msforeachdb 
+'use [?]; 
+SELECT DB_NAME() AS DbName, 
+        name AS FileName, 
+        type_desc,
+        size/128.0 AS CurrentSizeMB,  
+        size/128.0 - CAST(FILEPROPERTY(name, ''SpaceUsed'') AS INT)/128.0 AS FreeSpaceMB
+FROM sys.database_files
+WHERE type IN (0,1);';
+    
+SELECT * 
+FROM #FileSize
+WHERE dbName NOT IN ('distribution', 'master', 'model', 'msdb')
+AND FreeSpaceMB > ?;
+    
+DROP TABLE #FileSize;
+
+From <https://www.sqlshack.com/how-to-determine-free-space-and-file-size-for-sql-server-databases/> 
+
+
+
+-------------------database size per monthly---------------
+WITH BackupsSize AS(
+SELECT TOP 1000
+      rn = ROW_NUMBER() OVER (ORDER BY DATEPART(year,[backup_start_date]) ASC, DATEPART(month,[backup_start_date]) ASC)
+    , [Year]  = DATEPART(year,[backup_start_date])
+    , [Month] = DATEPART(month,[backup_start_date])
+    , [Backup Size GB] = CONVERT(DECIMAL(10,2),ROUND(AVG([backup_size]/1024/1024/1024),4))
+    , [Compressed Backup Size GB] = CONVERT(DECIMAL(10,2),ROUND(AVG([compressed_backup_size]/1024/1024/1024),4))
+FROM 
+    msdb.dbo.backupset
+WHERE 
+    [database_name] = N'SAMSUNG_EIV_SEARCHING'
+AND [type] = 'D'
+AND backup_start_date BETWEEN DATEADD(mm, - 13, GETDATE()) AND GETDATE()
+GROUP BY 
+    [database_name]
+    , DATEPART(yyyy,[backup_start_date])
+    , DATEPART(mm, [backup_start_date])
+ORDER BY [Year],[Month]) 
+--SECTION 1 END
+ 
+--SECTION 2 BEGIN
+SELECT 
+   b.Year,
+   b.Month,
+   b.[Backup Size GB],
+   0 AS deltaNormal,
+   b.[Compressed Backup Size GB],
+   0 AS deltaCompressed
+FROM BackupsSize b
+WHERE b.rn = 1
+UNION
+SELECT 
+   b.Year,
+   b.Month,
+   b.[Backup Size GB],
+   b.[Backup Size GB] - d.[Backup Size GB] AS deltaNormal,
+   b.[Compressed Backup Size GB],
+   b.[Compressed Backup Size GB] - d.[Compressed Backup Size GB] AS deltaCompressed
+FROM BackupsSize b
+CROSS APPLY (
+   SELECT bs.[Backup Size GB],bs.[Compressed Backup Size GB]
+   FROM BackupsSize bs
+   WHERE bs.rn = b.rn - 1
+) AS d
+--SECTION 2 END
