@@ -58,3 +58,19 @@ FROM sys.indexes i
 		ON ips.object_id = i.object_id AND ips.index_id = i.index_id
 WHERE ips.page_count > 1000 AND ips.avg_fragmentation_in_percent > 30 ;
 
+--------------- Rebuild index------------
+ALTER INDEX [ALL | <index name>] ON TableName REBUILD
+WITH
+PAD_INDEX = { ON | OFF }
+FILLFACTOR = fillfactor
+SORT_IN_TEMPDB = { ON | OFF }
+ONLINE = {ON [ ( <low_priority_lock_wait> ) ] | OFF }
+RESUMABLE = { ON | OFF }
+MAX_DURATION = <time> [MINUTES}
+MAXDOP = max_degree_of_parallelism
+----------- Reorg index ------------------
+ALTER INDEX [ALL | <index name>] ON TableName REORGANISE
+WITH
+LOB_COMPACTION = { ON | OFF }
+
+
