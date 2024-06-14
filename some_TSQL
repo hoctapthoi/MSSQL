@@ -22,11 +22,11 @@ WHILE (1 = 1)
 	    
 	update AdventureWorks2012.[Sales].[SalesOrderDetailEnlarged]set  UnitPrice = UnitPriceDiscount
 	    
-	IF @@ROWCOUNT = 0
+	    IF @@ROWCOUNT = 0
 		BEGIN
-	        COMMIT TRANSACTION
+	           COMMIT TRANSACTION
 	        BREAK
-	 END
+	    END
 	COMMIT TRANSACTION
     END
 SET ROWCOUNT  0
