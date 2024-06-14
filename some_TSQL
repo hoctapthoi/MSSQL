@@ -7,3 +7,28 @@ group by name
 --------convert date-------
 select getdate()                    --> 2024-06-14 07:32:13.260
 select convert (date, getdate())    --> 2024-06-14
+
+---------- commit mỗi ROWCOUNT -----
+	#old:
+	update AdventureWorks2012.[Sales].[SalesOrderDetailEnlarged]set  UnitPrice = UnitPriceDiscount
+	End
+	--> transaction sẽ lock bảng cho đến khi thực thi xong
+	
+	#new:
+	SET ROWCOUNT  1000
+	WHILE (1 = 1)
+	  BEGIN
+	    BEGIN TRANSACTION
+	    
+	update AdventureWorks2012.[Sales].[SalesOrderDetailEnlarged]set  UnitPrice = UnitPriceDiscount
+	    
+	    IF @@ROWCOUNT = 0
+	      BEGIN
+	        COMMIT TRANSACTION
+	        BREAK
+	      END
+	    COMMIT TRANSACTION
+	  END
+	SET ROWCOUNT  0
+	--> transaction ghi mỗi 1000 rows, các query có thể select dữ liệu trong bảng ngay sau khi ghi 1000 rows xuống bảng
+	
