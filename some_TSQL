@@ -1,0 +1,9 @@
+----------statistic by something -----------
+select distinct name, 
+        count (name) as quatity
+from xxx
+group by name
+
+--------convert date-------
+select getdate()                    --> 2024-06-14 07:32:13.260
+select convert (date, getdate())    --> 2024-06-14

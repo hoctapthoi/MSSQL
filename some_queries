@@ -1,5 +1,0 @@
-----------statistic by something -----------
-select distinct name, 
-        count (name) as quatity
-from xxx
-group by name
