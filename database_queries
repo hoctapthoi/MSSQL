@@ -72,7 +72,7 @@ SELECT TOP 1000
 FROM 
     msdb.dbo.backupset
 WHERE 
-    [database_name] = N'SAMSUNG_EIV_SEARCHING'
+    [database_name] = N'DBxxxx'
 AND [type] = 'D'
 AND backup_start_date BETWEEN DATEADD(mm, - 13, GETDATE()) AND GETDATE()
 GROUP BY 
