@@ -1,0 +1,12 @@
+-----matrix of permission
+select
+    u.name [user],
+    r.name [role]
+from 
+    sys.server_principals u
+    join sys.server_role_members rm 
+        on u.principal_id = rm.member_principal_id
+        and u.type in ('S')
+    join sys.server_principals r 
+        on r.principal_id = rm.role_principal_id
+        and r.type in ('R')
