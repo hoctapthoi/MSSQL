@@ -142,5 +142,7 @@ s.query_plan_hash
 from s
 cross apply sys.dm_exec_sql_text(s.[sql_handle]) as st
 cross apply sys.dm_exec_query_plan(s.[plan_handle]) as sp
+where last_execution_time between  dateadd(day, -20, getdate()) and getdate()
+order by TotDuration desc
 
 From <https://blog.devart.com/sql-server-query-history.html> 
