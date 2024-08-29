@@ -10,3 +10,4 @@ from
     join sys.server_principals r 
         on r.principal_id = rm.role_principal_id
         and r.type in ('R')
+------------------
