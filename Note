@@ -1,3 +1,5 @@
 --1 bật capture deadlock, event được lưu vào sql server error log ---
 DBCC TRACEON (1204, 1222, -1)
+--- kiểm tra trạng tất cả các trace flag đã bật
+DBCC TRACESTATUS (-1)
 
