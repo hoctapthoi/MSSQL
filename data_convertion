@@ -1,0 +1,35 @@
+--------convert date-------
+select getdate()                    --> 2024-06-14 07:32:13.260
+select convert (date, getdate())    --> 2024-06-14
+
+-----convert varchar to date-------
+select cast(concat(column1,'-',column2,'-',column3) as date) newcolumn
+
+--------------split string to table-------
+---create table valued function---
+CREATE FUNCTION [dbo].[STRING_SPLIT]
+(
+    @List      nvarchar(max),
+    @Delimiter nvarchar(50)
+)
+RETURNS @t table ([value] nvarchar(max))
+AS
+BEGIN
+    SET @List += @Delimiter;
+    ;WITH a(f,t) AS  
+    (
+        SELECT CAST(1 AS bigint), CHARINDEX(@Delimiter, @List)
+        UNION ALL
+        SELECT t + 1, CHARINDEX(@Delimiter, @List, t + 1) 
+        FROM a WHERE CHARINDEX(@Delimiter, @List, t + 1) > 0
+    )  
+    INSERT @t SELECT SUBSTRING(@List, f, t - f) FROM a OPTION (MAXRECURSION 0);
+    RETURN;  
+END
+
+---grant select to this function---
+grant select on object::STRING_SPLIT to xxx
+  
+--use function---
+select value from STRING_SPLIT('fadkas;jflkaa;jf;,fgs',';')
+
