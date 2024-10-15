@@ -1,0 +1,9 @@
+Create proc [dbo].[truncate] @table nvarchar (200)
+with execute as 'xxxx'  --- xxxx is a sysadmin user----
+as 
+begin 
+ -- set nocount on added to prevent extra result sets from 
+--- interfering with SELECT statements
+   Set Nocount on;
+  exec ('Truncate table ' + @table)
+END
