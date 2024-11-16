@@ -1,0 +1,16 @@
+
+SET ROWCOUNT  1000
+WHILE (1 = 1)
+  BEGIN
+    BEGIN TRANSACTION
+    
+select * into tableA from tableB option (maxdop 4)
+    
+    IF @@ROWCOUNT = 0
+      BEGIN
+        COMMIT TRANSACTION
+        BREAK
+      END
+    COMMIT TRANSACTION
+  END
+SET ROWCOUNT  0
