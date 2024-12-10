@@ -1,0 +1,8 @@
+1. Read Committed Snapshot Isolation (RCSI)
+  - Bật cùng Read Committed, DB engine sẽ tạo ra "row level" của dữ liệu cho mỗi transaction để đảo bảo luồng read không bị khóa khi có luồng write
+  - Dữ liệu đọc sẽ là dữ liệu SNAPSHOT (dữ liệu trước khi được thay đổi, đang được transaction khác thay dổi) thay vì dữ liệu thật
+  - Bật tính năng: ALTER DATABASE TestDB SET READ_COMMITTED_SNAPSHOT ON 
+  - Kiểm tra trạng thái: SELECT name AS DatabaseName,is_read_committed_snapshot_on 
+                         FROM sys.databases 
+                         WHERE name = 'TestDB'
+  - Nhược điểm: tốn thêm temp, dữ liệu đọc được là dữ liệu trước khi bị ghi
