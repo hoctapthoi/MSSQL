@@ -1,0 +1,52 @@
+--------------audit--------
+
+select * from sys.partition_functions;
+select distinct OBJECT_ID,OBJECT_NAME(object_id) table_name, partition_number, rows from sys.partitions where object_id > 10000 and partition_number>1 order by object_id,partition_number;
+select * from sys.partition_schemes;
+select * from sys.partition_range_values;
+
+
+SELECT 
+    t.name AS TableName,
+    i.name AS IndexName,
+	i.type_desc AS IndexType,
+    c.name AS ColumnName,
+    ps.name AS PartitionScheme,
+    pf.name AS PartitionFunction
+FROM 
+    sys.tables AS t
+JOIN 
+    sys.indexes AS i ON t.object_id = i.object_id
+JOIN 
+    sys.index_columns AS ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
+JOIN 
+    sys.columns AS c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+JOIN 
+    sys.partition_schemes AS ps ON i.data_space_id = ps.data_space_id
+JOIN 
+    sys.partition_functions AS pf ON ps.function_id = pf.function_id
+WHERE 
+    i.data_space_id IN (SELECT data_space_id FROM sys.partition_schemes)
+AND i.type_desc='CLUSTERED'
+ORDER BY 
+    t.name, i.name;
+
+    
+------------- create ------------
+CREATE PARTITION FUNCTION [PF_2024](date) AS RANGE LEFT FOR VALUES (N'2024-12-01')
+
+
+CREATE PARTITION SCHEME [PS_2024] AS PARTITION [PF_2024] ALL TO ([PRIMARY])
+
+
+CREATE CLUSTERED INDEX [ClusteredIndex_on_PS_2024_xxx] ON [dbo].[T_ACCOUNT_INFO]
+(
+	[ETL_DATE]
+)WITH (SORT_IN_TEMPDB = OFF, DROP_EXISTING = OFF, ONLINE = ON) ON [PS_2024]([LOG_DATE])
+
+
+DROP INDEX [ClusteredIndex_on_PS_2024_xxx] ON [dbo].[T_ACCOUNT_INFO]
+
+------ alter ------------
+ALTER PARTITION SCHEME PS_2024 NEXT USED [PRIMARY];
+ALTER PARTITION FUNCTION PF_2024() SPLIT RANGE (N'2024-08-02');
