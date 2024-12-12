@@ -32,20 +32,29 @@ ORDER BY
     t.name, i.name;
 
     
-------------- create ------------
-CREATE PARTITION FUNCTION [PF_2024](date) AS RANGE LEFT FOR VALUES (N'2024-12-01')
-
+------------- create Function and Scheme ------------
+CREATE PARTITION FUNCTION [PF_2024](date) AS RANGE LEFT FOR VALUES (N'2024-12-01',N'2024-12-15')
 
 CREATE PARTITION SCHEME [PS_2024] AS PARTITION [PF_2024] ALL TO ([PRIMARY])
+--OR--
+CREATE PARTITION SCHEME [PS_2024] AS PARTITION [PF_2024] TO ([FileGroup1],[FileGroup2],[PRIMARY])
 
-
+--------- add Parition to existing table ---
 CREATE CLUSTERED INDEX [ClusteredIndex_on_PS_2024_xxx] ON [dbo].[T_ACCOUNT_INFO]
 (
 	[LOG_DATE]
 )WITH (SORT_IN_TEMPDB = OFF, DROP_EXISTING = OFF, ONLINE = ON) ON [PS_2024]([LOG_DATE])
 
-
 DROP INDEX [ClusteredIndex_on_PS_2024_xxx] ON [dbo].[T_ACCOUNT_INFO]
+
+------ create table with partition ----
+CREATE TABLE [T_ACCOUNT_INFO] 
+(
+	[ID] INT,
+	[DESCRIPTION] NVARCHAR(200),
+	[LOG_DATE] DATE,
+	[ADD_INFORMATION] NVARCHAR (300)
+) ON [PS_2024](LOG_DATE)
 
 ------ alter ------------
 ALTER PARTITION SCHEME PS_2024 NEXT USED [PRIMARY];
