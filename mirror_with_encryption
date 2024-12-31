@@ -1,1 +1,149 @@
-x
+------ 0. kiểm tra trạng thái trên 2 server ----
+-- endpoint --
+select * from sys.endpoints
+
+-- certificate --
+SELECT * FROM sys.certificates
+
+-- master key --
+select * from sys.symmetric_keys
+
+---- 1. Cấu hình Outbound connection trên server (secondary) ----
+USE master;  
+CREATE MASTER KEY ENCRYPTION BY PASSWORD = '12345MtCpX';  
+GO  
+--View Key
+select * from sys.symmetric_keys
+
+CREATE CERTIFICATE cert_mirror_fpt 
+   WITH SUBJECT = 'mirror certificate',
+   EXPIRY_DATE = '12/31/2199';
+GO
+--view certificate
+USE master;
+SELECT * FROM sys.certificates;
+
+create ENDPOINT Endpoint_Mirroring
+   STATE = STARTED
+   AS TCP (
+      LISTENER_PORT=5555
+      , LISTENER_IP = ALL
+   ) 
+   FOR DATABASE_MIRRORING ( 
+      AUTHENTICATION = CERTIFICATE cert_mirror_fpt
+      , ENCRYPTION = REQUIRED ALGORITHM AES
+      , ROLE = ALL
+   );
+GO  
+-- view endpoint
+select * from sys.database_mirroring_endpoints
+
+BACKUP CERTIFICATE cert_mirror_fpt  TO FILE = 'C:\cert\cert_mirror_fpt.cer'; 
+
+----- 2. copy cer file từ  secondary sang primary ---
+
+----- 3. Cấu hình Outbound connection trên server (primary) -------
+USE master;  
+CREATE MASTER KEY ENCRYPTION BY PASSWORD ='dliuDSGF#2030';
+GO  
+ --View Key
+select * from sys.symmetric_keys
+
+CREATE CERTIFICATE cert_mirror_vt 
+   WITH SUBJECT = 'certificate for database mirroring', 
+   EXPIRY_DATE = '12/31/2199';
+GO
+ --view certificate
+USE master;
+SELECT * FROM sys.certificates;
+
+create ENDPOINT Endpoint_Mirroring
+   STATE = STARTED
+   AS TCP (
+      LISTENER_PORT=5555
+      , LISTENER_IP = ALL
+   ) 
+   FOR DATABASE_MIRRORING ( 
+      AUTHENTICATION = CERTIFICATE cert_mirror_vt
+      , ENCRYPTION = REQUIRED ALGORITHM AES
+      , ROLE = ALL
+   );
+-- view endpoint
+select * from sys.database_mirroring_endpoints
+
+GO  
+BACKUP CERTIFICATE cert_mirror_vt  TO FILE = 'C:\cert\cert_mirror_vt.cer';
+GO
+ 
+----- 4. copy cer file từ  secondary sang secondary ---
+
+------ 5. Cấu hình Inbound Connections trên server secondary ------
+USE master;  
+CREATE LOGIN app_mirror_fpt WITH PASSWORD = 'ldkjaf289@#'; 
+GO  
+CREATE USER app_mirror_fpt FOR LOGIN app_mirror_fpt;  
+GO  
+CREATE CERTIFICATE cert_mirror_vt
+   AUTHORIZATION app_mirror_fpt
+   FROM FILE = 'C:\cert\cert_mirror_vt.cer'  
+GO  
+GRANT CONNECT ON ENDPOINT::Endpoint_Mirroring TO app_mirror_fpt;
+GO
+
+----- 6. Cấu hình Inbound Connections trên server primary ----
+USE master;  
+CREATE LOGIN app_mirror_vt WITH PASSWORD = 'iojIUJH83242#';  
+GO  
+CREATE USER app_mirror_vt FOR LOGIN app_mirror_vt;
+GO  
+CREATE CERTIFICATE cert_mirror_fpt
+   AUTHORIZATION app_mirror_vt
+   FROM FILE = 'C:\cert\cert_mirror_fpt.cer'
+GO
+GRANT CONNECT ON ENDPOINT::Endpoint_Mirroring TO app_mirror_vt;
+GO  
+
+----- 7. tạo script để tiến hành backup và restore-----
+SELECT db.name, dm.mirroring_role_desc, recovery_model_desc, dm.mirroring_safety_level_desc, dm.mirroring_state_desc
+,'alter database ' + db.name + ' set partner off;' as 'control partner'
+,'BACKUP DATABASE '+ db.name + ' TO  DISK = N''E:\SQL_BACKUP\' +  db.name + '.bak'' WITH NOFORMAT, NOINIT,  NAME = N''' + db.name + ' Full Database Backup'', SKIP, NOREWIND, NOUNLOAD, COMPRESSION,  STATS = 10' as 'backup db full'
+,'BACKUP LOG '+ db.name + ' TO  DISK = N''E:\SQL_BACKUP\' +  db.name + '_TRANS1.bak'' WITH NOFORMAT, NOINIT,  NAME = N''' + db.name + 'Trans1 Database Backup'', SKIP, NOREWIND, NOUNLOAD, COMPRESSION,  STATS = 10' as 'backup trans 1'
+,'BACKUP LOG '+ db.name + ' TO  DISK = N''E:\SQL_BACKUP\' +  db.name + '_TRANS2.bak'' WITH NOFORMAT, NOINIT,  NAME = N''' + db.name + 'Trans2 Database Backup'', SKIP, NOREWIND, NOUNLOAD, COMPRESSION,  STATS = 10' as 'backup trans 2'
+,'RESTORE DATABASE '+ db.name + ' FROM  DISK = N''E:\SQL_BACKUP\' +  db.name + '.bak'' WITH  FILE = 1,  NORECOVERY,  NOUNLOAD,  STATS = 5' as 'Restore db '
+,'RESTORE LOG '+ db.name + ' FROM  DISK = N''E:\SQL_BACKUP\' +  db.name + '_TRANS1.bak'' WITH  FILE = 1,  NORECOVERY,  NOUNLOAD,  STATS = 5' as 'Restore TRANS1 '
+,'RESTORE LOG '+ db.name + ' FROM  DISK = N''E:\SQL_BACKUP\' +  db.name + '_TRANS2.bak'' WITH  FILE = 1,  NORECOVERY,  NOUNLOAD,  STATS = 5' as 'Restore TRANS2 '
+,'ALTER DATABASE  ' +  db.name + ' SET PARTNER = ''TCP://Primary01:5555'';' as 'set partner on Mirror'
+,'ALTER DATABASE  ' +  db.name + ' SET PARTNER = ''TCP://Secondary01:5555'';' as 'set partner on Principal'
+,'ALTER DATABASE  ' +  db.name + ' SET PARTNER  SAFETY OFF;' as 'set partner safety OFF on Principal'
+FROM [master].sys.databases  as db,sys.database_mirroring as dm
+where db.database_id=dm.database_id and 
+   db.state_desc <> 'OFFLINE' and 
+   --dm.mirroring_role_desc = 'PRINCIPAL' and
+   (dm.mirroring_role_desc <> 'MIRROR' or dm.mirroring_role_desc is null)
+    and db.name not in ('master','tempdb', 'model','msdb','ReportServer','ReportServerTempDB') 
+    and db.name not in 
+    (select a.name from master.dbo.sysdatabases a where convert(varchar(20),databasepropertyex(a.name, 'Status')) = 'OFFLINE' )
+order by name
+
+----- 8.Set partner trên server secondar---------
+ALTER DATABASE tên db SET PARTNER = 'TCP://Primary01:5555';  
+
+----- 9.Set partner trên server primary ----------
+ALTER DATABASE tên db SET PARTNER = 'TCP://Secondary01:5555';  
+ 
+------ 10.Chuyển database sang mode high-performance -----
+ALTER DATABASE tên db SET PARTNER SAFETY OFF;  
+
+----- 11.Kiểm tra trạng thái các Database, đảm bảo các tham số Role: PRINCIPAL, State: SYNCHRONIZED, Operating mode: HIGH PERFORMANC--------
+SELECT 
+   DB_NAME(database_id) AS 'DB',
+   mirroring_role_desc  AS 'Role',
+   mirroring_state_desc AS 'State',
+   CASE mirroring_safety_level
+      WHEN 1 THEN 'HIGH PERFORMANCE'
+      WHEN 2 THEN 'HIGH SAFETY'
+   END AS 'Operating Mode'
+FROM sys.database_mirroring
+WHERE mirroring_state IS NOT NULL;"
+
+
