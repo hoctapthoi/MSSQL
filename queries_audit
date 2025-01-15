@@ -130,7 +130,7 @@ else(substring(st.text,(s.statement_start_offset+2)/2,(
 case
 when s.statement_end_offset =-1 then len(convert(nvarchar(MAX),st.text))*2      
 else s.statement_end_offset    
-end - s.statement_start_offset)/2  ))
+end - s.statement_start_offset)/2 + 1 ))
 end as query_text,
 db_name(st.dbid) as database_name,
 object_schema_name(st.objectid, st.dbid)+'.'+object_name(st.objectid, st.dbid) as [object_name],
