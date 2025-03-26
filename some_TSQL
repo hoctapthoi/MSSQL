@@ -2,7 +2,7 @@
 ALTER TABLE [dbo].[LogErrors] ADD  CONSTRAINT [DF_risk_LogErrors_ErrorDateTime]  DEFAULT (getdate()) FOR [ErrorDateTime]
 
 --------- update ErrorDate from ErrorDateTime
-UPDATE [dbo].[LogErrors] SET ErrorDate = CAST( ErrorDateTime as DATE)
+UPDATE [dbo].[LogErrors] SET ErrorDate = CAST( ErrorDateTime as DATE) WHERE ErrorDate IS NULL
 
 ------statistic by something -----------
 select distinct name, 
