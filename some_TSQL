@@ -1,6 +1,9 @@
 ----------add default getdate constraint--------
 ALTER TABLE [dbo].[LogErrors] ADD  CONSTRAINT [DF_risk_LogErrors_ErrorDateTime]  DEFAULT (getdate()) FOR [ErrorDateTime]
 
+--------- update ErrorDate from ErrorDateTime
+UPDATE [dbo].[LogErrors] SET ErrorDate = CAST( ErrorDateTime as DATE)
+
 ------statistic by something -----------
 select distinct name, 
         count (name) as quatity
