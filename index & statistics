@@ -74,3 +74,82 @@ WITH
 LOB_COMPACTION = { ON | OFF }
 
 
+---------- auto review index
+---create table---
+
+USE [AUD_DBLOG]
+GO
+
+
+CREATE TABLE [dbo].[idx](
+	[date] [date] NULL,
+	[DBName] [nvarchar](128) NULL,
+	[SchemaName] [sysname] NOT NULL,
+	[TableName] [sysname] NOT NULL,
+	[IndexName] [sysname] NULL,
+	[IndexKeys] [nvarchar](max) NULL,
+	[IndexType] [nvarchar](60) NULL,
+	[IndexSizeMB] [bigint] NULL,
+	[idx_fragment] [float] NULL
+) ON [PRIMARY] TEXTIMAGE_ON [PRIMARY]
+GO
+
+------------ insert index into table ----
+
+DECLARE @dbName NVARCHAR(MAX)
+DECLARE @query NVARCHAR(MAX)
+
+-- Tạo CURSOR để lặp qua tất cả các database trong hệ thống
+DECLARE db_cursor CURSOR FOR
+SELECT name 
+FROM sys.databases
+WHERE state_desc = 'ONLINE' -- Chỉ chọn những database đang hoạt động
+  AND name NOT IN ('master', 'tempdb', 'model', 'msdb') -- Loại trừ các database hệ thống
+
+OPEN db_cursor
+
+FETCH NEXT FROM db_cursor INTO @dbName
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    -- Tạo câu truy vấn động cho từng database
+    SET @query = 'insert into AUD_DBLOG.dbo.idx
+    SELECT DISTINCT cast(getdate() as date) date,
+        ''' + @dbName + ''' AS DBName,
+        s.name AS SchemaName,
+        t.name AS TableName,
+        i.name AS IndexName,
+        STUFF((
+            SELECT '', '' + c.name
+            FROM sys.index_columns ic
+            INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+            WHERE ic.object_id = i.object_id AND ic.index_id = i.index_id
+            ORDER BY ic.key_ordinal
+            FOR XML PATH(''''), TYPE
+        ).value(''.'', ''NVARCHAR(MAX)''), 1, 2, '''') AS IndexKeys,
+        i.type_desc AS IndexType,
+        ius.used_page_count * 8 / 1024 AS IndexSizeMB,
+        stats.avg_fragmentation_in_percent AS idx_fragment
+    FROM 
+        ' + @dbName + '.sys.tables t
+        INNER JOIN ' + @dbName + '.sys.schemas s ON t.schema_id = s.schema_id
+        INNER JOIN ' + @dbName + '.sys.indexes i ON t.object_id = i.object_id
+        INNER JOIN ' + @dbName + '.sys.dm_db_partition_stats ius ON i.object_id = ius.object_id AND i.index_id = ius.index_id
+        LEFT JOIN ' + @dbName + '.sys.dm_db_index_physical_stats(DB_ID(), NULL, NULL, NULL, ''LIMITED'') AS stats
+            ON i.object_id = stats.object_id AND i.index_id = stats.index_id
+    WHERE 
+        s.name NOT IN (''cdc'')
+        AND i.type_desc <> ''HEAP''
+        AND ius.used_page_count * 8 / 1024 > 8
+    ORDER BY 
+        s.name, t.name, i.name;
+    '
+
+    -- Thực thi câu truy vấn cho từng database
+    EXEC sp_executesql @query
+
+    FETCH NEXT FROM db_cursor INTO @dbName
+END
+
+CLOSE db_cursor
+DEALLOCATE db_cursor
