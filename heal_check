@@ -1,0 +1,187 @@
+=== copy to excel ===
+Requirement	Expected result	Script Action	Script Audit
+Check DB version và patch	MSSQL  >= 2016	None	"Audit:
+Select @@version"
+Verify 'Ad Hoc Distributed Queries' option	0	"EXECUTE sp_configure 'show advanced options', 1; RECONFIGURE;
+EXECUTE sp_configure 'Ad Hoc Distributed Queries', 0; RECONFIGURE;
+GO 
+EXECUTE sp_configure 'show advanced options', 0; RECONFIGURE;
+"	"Audit:
+SELECT name, CAST(value as int) as value_configured, CAST(value_in_use as int) as value_in_use 
+FROM sys.configurations
+WHERE 
+name in ('ad hoc distributed queries', 
+'clr enabled', 
+'Cross db ownership chaining', 
+'Ole Automation Procedures', 
+'Scan for startup procs',
+'Database Mail XPs',
+'Default trace enabled') 
+"
+Verify 'CLR enabled' option	0	EXECUTE sp_configure 'clr enabled', 0; RECONFIGURE;	
+Verify 'Cross DB Ownership Chaining' option	0	"EXECUTE sp_configure 'Cross db ownership chaining', 0; RECONFIGURE;
+GO
+"	
+Verify 'Ole Automation Procedures Server Configuration' option	0	"EXECUTE sp_configure 'show advanced options', 1; RECONFIGURE; 
+EXECUTE sp_configure 'Ole Automation Procedures', 0; RECONFIGURE; 
+GO 
+EXECUTE sp_configure 'show advanced options', 0; RECONFIGURE;
+"	
+Verify 'Scan For Startup Procs' option	0	"EXECUTE sp_configure 'show advanced options', 1; RECONFIGURE; 
+EXECUTE sp_configure 'Scan for startup procs', 0; RECONFIGURE; 
+GO 
+EXECUTE sp_configure 'show advanced options', 0; RECONFIGURE;
+"	
+Verify 'Database Mail XPs' option	0	"EXECUTE sp_configure 'show advanced options', 1; RECONFIGURE; 
+EXECUTE sp_configure 'Database Mail XPs', 0; RECONFIGURE; 
+GO 
+EXECUTE sp_configure 'show advanced options', 0; RECONFIGURE;
+"	
+Verify 'sa’ login account	0	ALTER LOGIN sa DISABLE;	
+Verify 'Default Trace Enabled' option	1	"EXECUTE sp_configure 'show advanced options', 1; RECONFIGURE; 
+EXECUTE sp_configure 'Default trace enabled', 1; RECONFIGURE; 
+GO 
+EXECUTE sp_configure 'show advanced options', 0; RECONFIGURE;
+"	
+Verify 'AUTO_CLOSE' option	0	"SELECT db.name,
+'alter database ' + db.name + ' SET AUTO_CLOSE OFF;' as 'CODE',
+'alter database ' + db.name + ' SET TRUSTWORTHY OFF;' as 'CODE 2',
+'alter database ' + db.name + ' SET DB_CHAINING OFF;' as 'CODE 3'
+FROM [master].sys.databases  as db
+where 
+db.state_desc <> 'OFFLINE' and 
+db.name not in ('master','tempdb', 'model','msdb','ReportServer','ReportServerTempDB') 
+order by name"	"Audit:
+select name, is_auto_close_on, is_trustworthy_on, is_db_chaining_on
+from sys.databases
+where database_id>4
+"
+Verify 'Trustworthy' option	0		
+Verify 'Cross-database ownership chaining' option	0		
+Verify 'xp_availablemedia' procedure	0	REVOKE EXECUTE ON xp_availablemedia TO PUBLIC;	"Audit:
+Select OBJECT_NAME(major_id) as 'extended_procedure', permission_name, 'PUBLIC' as 'to_principal', type, grantee_principal_id 
+from sys.database_permissions where OBJECT_NAME(major_id) in ('xp_enumgroups', 'xp_availablemedia', 'xp_fixeddrives', 'xp_servicecontrol', 'xp_subdirs','xp_regaddmultistring',
+'xp_regdeletekey', 'xp_regdeletevalue', 'xp_regenumvalues', 'xp_regremovemultistring', 'xp_regwrite', 'xp_regread') AND [type] = 'EX' AND grantee_principal_id = 0
+"
+Verify 'xp_enumgroups' procedure	0	REVOKE EXECUTE ON xp_enumgroups to PUBLIC;	
+Verify 'xp_fixeddrives' procedure	0	REVOKE EXECUTE ON xp_fixeddrives TO PUBLIC;--195	
+Verify 'xp_servicecontrol' procedure	0	REVOKE EXECUTE ON xp_servicecontrol TO PUBLIC;	
+Verify 'xp_subdirs' procedure	0	REVOKE EXECUTE ON xp_subdirs TO PUBLIC;	
+Verify 'xp_regaddmultistring' procedure	0	REVOKE EXECUTE ON xp_regaddmultistring TO PUBLIC;	
+Verify 'xp_regdeletekey' procedure	0	REVOKE EXECUTE ON xp_regdeletekey TO PUBLIC;	
+Verify 'xp_regdeletevalue' procedure	0	REVOKE EXECUTE ON xp_regdeletevalue TO PUBLIC;	
+Verify 'xp_regenumvalues' procedure	0	REVOKE EXECUTE ON xp_regenumvalues TO PUBLIC;	
+Verify 'xp_regremovemultistring' procedure	0	REVOKE EXECUTE ON xp_regremovemultistring TO PUBLIC;	
+Verify 'xp_regwrite' procedure	0	REVOKE EXECUTE ON xp_regwrite TO PUBLIC;	
+Verify 'xp_regread' procedure	0	REVOKE EXECUTE ON xp_regread TO PUBLIC;	
+ Guest connect from all databases except master, model, msdb, tempdb	0	"SELECT db.name,
+'USE ' + db.name + ';'+ ' REVOKE CONNECT FROM guest;' as 'CODE'
+FROM [master].sys.databases  as db
+where 
+db.state_desc <> 'OFFLINE' and 
+db.name not in ('master','tempdb', 'model','msdb','ReportServer','ReportServerTempDB') 
+order by name"	"Audit:
+
+"
+Verify 'CHECK_EXPIRATION' option	1	"SELECT sys.server_principals.name, 
+sys.server_principals.type_desc, 
+sys.server_principals.is_disabled, 
+sys.sql_logins.is_policy_checked, is_expiration_checked,
+'ALTER LOGIN ' + sys.server_principals.name + ' WITH CHECK_POLICY = ON;' as 'TURN POLICY ON',
+'ALTER LOGIN ' + sys.server_principals.name + ' WITH CHECK_EXPIRATION = ON;' as 'TURN EXPIRATION ON' 
+FROM sys.server_principals inner JOIN sys.sql_logins on  sys.server_principals.name = sys.sql_logins.name
+WHERE sys.server_principals.type IN ('U','S') and sys.server_principals.is_disabled ='0'-- active user
+"	"Audit:
+SELECT sys.server_principals.name, 
+sys.server_principals.type_desc, 
+sys.server_principals.is_disabled, 
+sys.sql_logins.is_policy_checked, is_expiration_checked
+FROM sys.server_principals inner JOIN sys.sql_logins on  sys.server_principals.name = sys.sql_logins.name
+WHERE sys.server_principals.type IN ('U','S') and sys.server_principals.is_disabled ='0'-- active user"
+Verify 'CHECK_POLICY' option	1		
+Verify 'SQL Server Audit” with login both failed and successful	1	"USE [master]
+GO
+EXEC xp_instance_regwrite N'HKEY_LOCAL_MACHINE', N'Software\Microsoft\MSSQLServer\MSSQLServer', N'AuditLevel', REG_DWORD, 3
+GO"	"Audit:
+"
+Verify 'Orphaned Users' are Dropped From SQL Server (Apply on each DB)	1	"CREATE TABLE #TempResults (DatabaseName NVARCHAR(255), PrincipalName NVARCHAR(255), AlterCommand NVARCHAR(255));
+
+DECLARE @DatabaseName NVARCHAR(255);
+DECLARE db_cursor CURSOR FOR
+SELECT name FROM sys.databases WHERE state_desc = 'ONLINE';
+
+OPEN db_cursor;
+FETCH NEXT FROM db_cursor INTO @DatabaseName;
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    DECLARE @DynamicSQL NVARCHAR(MAX);
+    SET @DynamicSQL = N'
+        USE [' + @DatabaseName + '];
+        INSERT INTO #TempResults (DatabaseName, PrincipalName, AlterCommand)
+        SELECT ''' + @DatabaseName + ''', name, ''USE [' + @DatabaseName + ']; DROP USER '' + QUOTENAME(name) + '';'' + CHAR(13) + CHAR(10)
+        FROM sys.database_principals p
+        WHERE p.type IN (''G'', ''S'', ''U'')
+          AND p.sid NOT IN (SELECT sid FROM sys.server_principals)
+          AND p.name NOT IN (''dbo'', ''guest'', ''INFORMATION_SCHEMA'', ''sys'', ''MS_DataCollectorInternalUser'')';
+
+    EXEC sp_executesql @DynamicSQL;
+
+    FETCH NEXT FROM db_cursor INTO @DatabaseName;
+END;
+
+CLOSE db_cursor;
+DEALLOCATE db_cursor;
+
+SELECT * FROM #TempResults
+ORDER BY DatabaseName;
+
+DROP TABLE #TempResults;
+"	"Audit:
+Use <Database_name>
+select name 
+from sys.database_principals p
+where p.type in ('G','S','U')
+and p.sid not in (select sid from sys.server_principals)
+and p.name not in (
+    'dbo',
+    'guest',
+    'INFORMATION_SCHEMA',
+    'sys',
+    'MS_DataCollectorInternalUser'
+) ;
+
+"
+Verify Enable log deadlock	1	"Enable log deadlock
+DBCC TRACEON (1222, -1)
+DBCC TRACEON (1204,-1)
+
+Disable log deadlock
+DBCC TRACEOFF  (1222, -1)
+DBCC TRACEOFF (1204, -1)"	"Audit:
+DBCC TRACESTATUS (-1)
+GO
+"
+Verify ‘CLR Assembly Permission Set’ is set to ‘SAFE_ACCESS’	1		"
+"
+Verify Named Pipes protocol	0	"Open SQL Server Configuration Manager software.
+Choose SQL Server Network Configuration -> Protocols for MSSQLSERVER."	"Audit:
+SELECT 'Named Pipes' AS [Protocol], iif(value_data = 1, 'Yes', 'No') AS isEnabled
+FROM sys.dm_server_registry
+WHERE registry_key LIKE '%np' AND value_name = 'Enabled'
+UNION
+SELECT 'Shared Memory', iif(value_data = 1, 'Yes', 'No')
+FROM sys.dm_server_registry
+WHERE registry_key LIKE '%sm' AND value_name = 'Enabled'
+UNION
+SELECT 'TCP/IP', iif(value_data = 1, 'Yes', 'No')
+FROM sys.dm_server_registry
+WHERE registry_key LIKE '%tcp' AND value_name = 'Enabled'"
+Verify Shared Memory protocol	1		
+Verify TCP/IP protocol	1		
+Cấu hình kết nối Port listener (Optional)	1		
+			
+			
+			
+"
+"			
