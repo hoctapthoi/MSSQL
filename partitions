@@ -33,29 +33,47 @@ ORDER BY
 
     
 ------------- create Function and Scheme ------------
-CREATE PARTITION FUNCTION [PF_2024](date) AS RANGE LEFT FOR VALUES (N'2024-12-01',N'2024-12-15')
+CREATE PARTITION FUNCTION [PF_tableA](date) AS RANGE LEFT FOR VALUES (N'2024-12-01',N'2024-12-15')
 
-CREATE PARTITION SCHEME [PS_2024] AS PARTITION [PF_2024] ALL TO ([PRIMARY])
+CREATE PARTITION SCHEME [PS_tableA] AS PARTITION [PF_tableA] ALL TO ([PRIMARY])
 --OR--
-CREATE PARTITION SCHEME [PS_2024] AS PARTITION [PF_2024] TO ([FileGroup1],[FileGroup2],[PRIMARY])
+CREATE PARTITION SCHEME [PS_tableA] AS PARTITION [PF_tableA] TO ([FileGroup1],[FileGroup2],[PRIMARY])
 
 --------- add Parition to existing table ---
-CREATE CLUSTERED INDEX [ClusteredIndex_on_PS_2024_xxx] ON [dbo].[T_ACCOUNT_INFO]
+CREATE CLUSTERED INDEX [ClusteredIndex_on_PS_tableA_xxx] ON [dbo].[tableA]
 (
 	[LOG_DATE]
-)WITH (SORT_IN_TEMPDB = OFF, DROP_EXISTING = OFF, ONLINE = ON) ON [PS_2024]([LOG_DATE])
+)WITH (SORT_IN_TEMPDB = OFF, DROP_EXISTING = OFF, ONLINE = ON) ON [PS_tableA]([LOG_DATE])
 
-DROP INDEX [ClusteredIndex_on_PS_2024_xxx] ON [dbo].[T_ACCOUNT_INFO]
+DROP INDEX [ClusteredIndex_on_PS_tableA_xxx] ON [dbo].[tableA]
 
 ------ create table with partition ----
-CREATE TABLE [T_ACCOUNT_INFO] 
+CREATE TABLE [tableA] 
 (
 	[ID] INT,
 	[DESCRIPTION] NVARCHAR(200),
 	[LOG_DATE] DATE,
 	[ADD_INFORMATION] NVARCHAR (300)
-) ON [PS_2024](LOG_DATE)
+) ON [PS_tableA](LOG_DATE)
 
 ------ alter ------------
-ALTER PARTITION SCHEME PS_2024 NEXT USED [PRIMARY];
-ALTER PARTITION FUNCTION PF_2024() SPLIT RANGE (N'2024-08-02');
+ALTER PARTITION SCHEME PS_tableA NEXT USED [PRIMARY];
+ALTER PARTITION FUNCTION PF_tableA() SPLIT RANGE (N'2024-08-02');
+
+------ truncate partition -------
+USE [xxx]
+GO
+
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE procedure [dbo].[truncate_partition] as
+declare @parno int;
+set @parno = (select $PARTITION.PF_tableA(convert(varchar,getdate() -90, 100)))
+
+truncate table [tableA] with (Partitions(@parno));
+GO
+
+
