@@ -1,0 +1,10 @@
+---source file----
+SalesOrderID,SalesOrderDetailID,CarrierTrackingNumber
+46980,13659,FAA2-449B-99
+
+-- command ---
+bulk insert  insert_dest
+from 'D:\export\aaa.csv'
+with   ( FIRSTROW = 2
+      , ROWTERMINATOR = '\n'
+      , FIELDTERMINATOR = ',')
