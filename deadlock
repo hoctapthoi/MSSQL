@@ -1,0 +1,6 @@
+SELECT 
+ CAST(event_data AS XML) AS event_xml
+FROM sys.fn_xe_file_target_read_file(
+ 'system_health*.xel', NULL, NULL, NULL
+)
+WHERE CAST(event_data AS XML).exist('/event[@name="xml_deadlock_report"]') = 1;
