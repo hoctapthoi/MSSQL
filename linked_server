@@ -1,0 +1,3 @@
+########## kiểm tra kết nối từ SQL sang Oracle ############
+SELECT *
+FROM OPENQUERY(ORACLE_LINK, 'SELECT * FROM schema_name.table_name');
