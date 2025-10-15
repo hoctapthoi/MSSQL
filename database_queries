@@ -132,3 +132,35 @@ CROSS APPLY (
    WHERE bs.rn = b.rn - 1
 ) AS d
 --SECTION 2 END
+
+########## kiểm tra dung lượng file group #########
+CREATE TABLE #FileGroupSize (
+    dbName NVARCHAR(128),
+    filegroup_name NVARCHAR(128),
+    total_size_MB DECIMAL(18,2),
+    used_size_MB DECIMAL(18,2),
+    free_size_MB DECIMAL(18,2)
+);
+
+EXEC sp_msforeachdb N'
+USE [?];
+INSERT INTO #FileGroupSize (dbName, filegroup_name, total_size_MB, used_size_MB, free_size_MB)
+SELECT 
+    DB_NAME() AS dbName,
+    fg.name AS filegroup_name,
+    SUM(df.size) * 8.0 / 1024 AS total_size_MB,
+    SUM(CAST(FILEPROPERTY(df.name, ''SpaceUsed'') AS INT)) * 8.0 / 1024 AS used_size_MB,
+    (SUM(df.size) - SUM(CAST(FILEPROPERTY(df.name, ''SpaceUsed'') AS INT))) * 8.0 / 1024 AS free_size_MB
+FROM sys.database_files df
+JOIN sys.filegroups fg ON df.data_space_id = fg.data_space_id
+WHERE df.type = 0 -- chỉ lấy file dữ liệu
+GROUP BY fg.name;
+';
+
+-- Hiển thị kết quả
+SELECT *
+FROM #FileGroupSize
+WHERE dbName NOT IN ('master', 'model', 'msdb', 'tempdb')
+ORDER BY dbName, free_size_MB DESC;
+
+DROP TABLE #FileGroupSize;
