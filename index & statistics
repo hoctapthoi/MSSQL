@@ -178,3 +178,20 @@ SELECT
 FROM sys.databases
 WHERE database_id > 4  -- Bỏ qua system databases
 ORDER BY name;
+
+-------- kiểm tra statistic cấp độ bảng --------
+SELECT
+    OBJECT_SCHEMA_NAME(s.object_id) AS SchemaName,
+    OBJECT_NAME(s.object_id) AS TableName,
+    s.name AS StatisticName,
+    STATS_DATE(s.object_id, s.stats_id) AS LastUpdated,
+    SUM(a.total_pages) * 8 AS TableSizeMB,
+    'UPDATE STATISTICS [' + OBJECT_SCHEMA_NAME(s.object_id) + '].[' + OBJECT_NAME(s.object_id) + '];' AS UpdateStatsCommand
+FROM sys.stats s
+JOIN sys.objects o ON s.object_id = o.object_id
+JOIN sys.partitions p ON o.object_id = p.object_id
+JOIN sys.allocation_units a ON p.partition_id = a.container_id
+WHERE STATS_DATE(s.object_id, s.stats_id) < DATEADD(DAY, -60, GETDATE())
+GROUP BY s.object_id, s.stats_id, s.name
+HAVING SUM(a.total_pages) * 8 > 8
+ORDER BY LastUpdated ASC;
