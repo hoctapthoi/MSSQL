@@ -153,3 +153,25 @@ END
 
 CLOSE db_cursor
 DEALLOCATE db_cursor
+
+------ kiểm tra trạng thái database statistic ----------
+SELECT 
+    name AS [Database_Name],
+    database_id,
+    CASE is_auto_create_stats_on 
+        WHEN 1 THEN 'ON' 
+        ELSE 'OFF' 
+    END AS [Auto_Create_Stats],
+    CASE is_auto_update_stats_on 
+        WHEN 1 THEN 'ON' 
+        ELSE 'OFF' 
+    END AS [Auto_Update_Stats],
+    CASE is_auto_update_stats_async_on 
+        WHEN 1 THEN 'ON' 
+        ELSE 'OFF' 
+    END AS [Auto_Update_Stats_Async],
+    state_desc AS [State],
+    recovery_model_desc AS [Recovery_Model]
+FROM sys.databases
+WHERE database_id > 4  -- Bỏ qua system databases
+ORDER BY name;
