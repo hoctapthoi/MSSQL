@@ -1,6 +1,7 @@
-SELECT 
- CAST(event_data AS XML) AS event_xml
-FROM sys.fn_xe_file_target_read_file(
- 'system_health*.xel', NULL, NULL, NULL
-)
-WHERE CAST(event_data AS XML).exist('/event[@name="xml_deadlock_report"]') = 1;
+SELECT    
+    DATEADD(HOUR, DATEDIFF(HOUR, GETUTCDATE(), GETDATE()),
+            CAST(event_data AS XML).value('(event/@timestamp)[1]', 'datetime2')) AS deadlock_time_local,
+    CAST(event_data AS XML) AS deadlock_xml
+FROM sys.fn_xe_file_target_read_file('system_health*.xel', NULL, NULL, NULL)
+WHERE CAST(event_data AS XML).exist('/event[@name="xml_deadlock_report"]') = 1
+ORDER BY deadlock_time_utc DESC;
