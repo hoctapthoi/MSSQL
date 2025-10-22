@@ -1,0 +1,5 @@
+ String or binary data would be truncated. [SQLSTATE 22001] (Error 8152)  The statement has been terminated. [SQLSTATE 01000] (Error 3621).  The step failed.
+ => câu lệnh insert/update vượt quá kích thước cột đã định nghĩa 
+ => giải pháp: bật DBCC TRACEON(460, -1)
+               Sau đó chạy lại câu lệnh, bạn sẽ thấy thông báo chi tiết hơn như:
+               String or binary data would be truncated in table 'DatabaseName.dbo.TableName', column 'ColumnName'. Truncated value: 'xxx...'
