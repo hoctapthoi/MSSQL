@@ -1,3 +1,8 @@
+------ searching in xml collumn ------
+SELECT *
+FROM YourTable
+WHERE CAST(sql_command AS NVARCHAR(MAX)) LIKE '%xxx%'
+
 ----------add default getdate constraint--------
 ALTER TABLE [dbo].[LogErrors] ADD  CONSTRAINT [DF_risk_LogErrors_ErrorDateTime]  DEFAULT (getdate()) FOR [ErrorDateTime]
 
