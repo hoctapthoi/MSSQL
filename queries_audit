@@ -1,3 +1,9 @@
+-------- finding the procedure having text ----
+SELECT    OBJECT_NAME(object_id) AS ProcedureName,    definition
+FROM sys.sql_modules
+WHERE 	definition LIKE '%#tmpMarginAcct%' 
+	AND definition LIKE '%create table%'
+
 ----------------------who is active ---------------------
 EXEC sp_WhoIsActive
 --    @filter = 'ATD_WEB',
