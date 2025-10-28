@@ -1,0 +1,223 @@
+########## 1. create dir #########
+mkdir "C:\SQLDB\DB_monitor"
+
+########## 2. create DB, Tbl ########
+USE [master]
+GO
+
+CREATE DATABASE [DB_monitor]
+ CONTAINMENT = NONE
+ ON  PRIMARY 
+( NAME = N'DB_monitor', FILENAME = N'C:\SQLDB\DB_monitor\DB_monitor.mdf' , SIZE = 8192KB , MAXSIZE = UNLIMITED, FILEGROWTH = 65536KB )
+ LOG ON 
+( NAME = N'DB_monitor_log', FILENAME = N'C:\SQLDB\DB_monitor\DB_monitor_log.ldf' , SIZE = 8192KB , MAXSIZE = 2048GB , FILEGROWTH = 65536KB )
+ WITH CATALOG_COLLATION = DATABASE_DEFAULT, LEDGER = OFF
+GO
+
+ALTER DATABASE [DB_monitor] SET RECOVERY SIMPLE 
+GO
+
+USE [DB_monitor]
+GO
+
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE TABLE [dbo].[WhoIsActive_History](
+	[dd hh:mm:ss.mss] [varchar](8000) NULL,
+	[session_id] [smallint] NOT NULL,
+	[sql_text] [xml] NULL,
+	[sql_command] [xml] NULL,
+	[login_name] [nvarchar](128) NOT NULL,
+	[wait_info] [nvarchar](4000) NULL,
+	[tasks] [varchar](30) NULL,
+	[tran_log_writes] [nvarchar](4000) NULL,
+	[CPU] [varchar](30) NULL,
+	[tempdb_allocations] [varchar](30) NULL,
+	[tempdb_current] [varchar](30) NULL,
+	[blocking_session_id] [smallint] NULL,
+	[reads] [varchar](30) NULL,
+	[writes] [varchar](30) NULL,
+	[context_switches] [varchar](30) NULL,
+	[physical_io] [varchar](30) NULL,
+	[physical_reads] [varchar](30) NULL,
+	[query_plan] [xml] NULL,
+	[used_memory] [varchar](30) NULL,
+	[status] [varchar](30) NOT NULL,
+	[tran_start_time] [datetime] NULL,
+	[implicit_tran] [nvarchar](3) NULL,
+	[open_tran_count] [varchar](30) NULL,
+	[percent_complete] [varchar](30) NULL,
+	[host_name] [nvarchar](128) NULL,
+	[database_name] [nvarchar](128) NULL,
+	[program_name] [nvarchar](128) NULL,
+	[start_time] [datetime] NOT NULL,
+	[login_time] [datetime] NULL,
+	[request_id] [int] NULL,
+	[collection_time] [datetime] NOT NULL
+) ON [PRIMARY] TEXTIMAGE_ON [PRIMARY]
+GO
+
+########### 3. create monitoring job #########
+USE [msdb]
+GO
+
+BEGIN TRANSACTION
+DECLARE @ReturnCode INT
+SELECT @ReturnCode = 0
+
+IF NOT EXISTS (SELECT name FROM msdb.dbo.syscategories WHERE name=N'[Uncategorized (Local)]' AND category_class=1)
+BEGIN
+EXEC @ReturnCode = msdb.dbo.sp_add_category @class=N'JOB', @type=N'LOCAL', @name=N'[Uncategorized (Local)]'
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+
+END
+
+DECLARE @jobId BINARY(16)
+EXEC @ReturnCode =  msdb.dbo.sp_add_job @job_name=N'Monitor_WhoIsActive_Collect_Data', 
+		@enabled=1, 
+		@notify_level_eventlog=2, 
+		@notify_level_email=0, 
+		@notify_level_netsend=0, 
+		@notify_level_page=0, 
+		@delete_level=0, 
+		@description=N'Collect sp_whoisactive data every 5 minutes', 
+		@category_name=N'[Uncategorized (Local)]', 
+		@owner_login_name=N'LPBS\tung.lt', @job_id = @jobId OUTPUT
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+
+EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'Insert_Data', 
+		@step_id=1, 
+		@cmdexec_success_code=0, 
+		@on_success_action=1, 
+		@on_success_step_id=0, 
+		@on_fail_action=2, 
+		@on_fail_step_id=0, 
+		@retry_attempts=0, 
+		@retry_interval=0, 
+		@os_run_priority=0, @subsystem=N'TSQL', 
+		@command=N'
+        EXEC sp_whoisactive 
+            @destination_table = ''db_monitor.dbo.WhoIsActive_History'',
+            @get_plans = 1,
+            @get_outer_command = 1,
+            @get_transaction_info = 1,
+            @get_task_info = 2;
+    ', 
+		@database_name=N'master', 
+		@flags=0
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+EXEC @ReturnCode = msdb.dbo.sp_update_job @job_id = @jobId, @start_step_id = 1
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+EXEC @ReturnCode = msdb.dbo.sp_add_jobschedule @job_id=@jobId, @name=N'Every_5_Minutes', 
+		@enabled=1, 
+		@freq_type=4, 
+		@freq_interval=1, 
+		@freq_subday_type=4, 
+		@freq_subday_interval=5, 
+		@freq_relative_interval=0, 
+		@freq_recurrence_factor=0, 
+		@active_start_date=20251013, 
+		@active_end_date=99991231, 
+		@active_start_time=0, 
+		@active_end_time=235959, 
+		@schedule_uid=N'0c1453b1-dde6-4483-8638-d767c41dc58e'
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+EXEC @ReturnCode = msdb.dbo.sp_add_jobserver @job_id = @jobId, @server_name = N'(local)'
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+COMMIT TRANSACTION
+GOTO EndSave
+QuitWithRollback:
+    IF (@@TRANCOUNT > 0) ROLLBACK TRANSACTION
+EndSave:
+GO
+
+######## 4. cleanup monitoring history _keep 7days data #######
+USE [msdb]
+GO
+
+BEGIN TRANSACTION
+DECLARE @ReturnCode INT
+SELECT @ReturnCode = 0
+
+IF NOT EXISTS (SELECT name FROM msdb.dbo.syscategories WHERE name=N'Database Maintenance' AND category_class=1)
+BEGIN
+EXEC @ReturnCode = msdb.dbo.sp_add_category @class=N'JOB', @type=N'LOCAL', @name=N'Database Maintenance'
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+
+END
+
+DECLARE @jobId BINARY(16)
+EXEC @ReturnCode =  msdb.dbo.sp_add_job @job_name=N'Monitor_WhoIsActive_Cleanup_7Days', 
+		@enabled=1, 
+		@notify_level_eventlog=2, 
+		@notify_level_email=0, 
+		@notify_level_netsend=0, 
+		@notify_level_page=0, 
+		@delete_level=0, 
+		@description=N'Delete WhoIsActive data older than 7 days', 
+		@category_name=N'Database Maintenance', 
+		@owner_login_name=N'LPBS\tung.lt', @job_id = @jobId OUTPUT
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+
+EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'Delete_Old_Records', 
+		@step_id=1, 
+		@cmdexec_success_code=0, 
+		@on_success_action=1, 
+		@on_success_step_id=0, 
+		@on_fail_action=2, 
+		@on_fail_step_id=0, 
+		@retry_attempts=2, 
+		@retry_interval=5, 
+		@os_run_priority=0, @subsystem=N'TSQL', 
+		@command=N'
+-- Xóa records cũ hơn 7 ngày
+DECLARE @RowsDeleted INT;
+DECLARE @CutoffDate DATETIME = DATEADD(DAY, -7, GETDATE());
+
+DELETE FROM dbo.WhoIsActive_History
+WHERE collection_time < @CutoffDate;
+
+SET @RowsDeleted = @@ROWCOUNT;
+
+-- Log kết quả
+PRINT ''Cleanup completed at: '' + CONVERT(VARCHAR, GETDATE(), 120);
+PRINT ''Cutoff date: '' + CONVERT(VARCHAR, @CutoffDate, 120);
+PRINT ''Rows deleted: '' + CAST(@RowsDeleted AS VARCHAR(20));
+
+-- Nếu xóa nhiều hơn 1 triệu rows, log warning
+IF @RowsDeleted > 1000000
+    RAISERROR(''Warning: Deleted more than 1 million rows (%d)'', 10, 1, @RowsDeleted) WITH LOG;
+', 
+		@database_name=N'db_monitor', 
+		@flags=0
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+EXEC @ReturnCode = msdb.dbo.sp_update_job @job_id = @jobId, @start_step_id = 1
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+EXEC @ReturnCode = msdb.dbo.sp_add_jobschedule @job_id=@jobId, @name=N'Daily_2AM_Cleanup', 
+		@enabled=1, 
+		@freq_type=4, 
+		@freq_interval=1, 
+		@freq_subday_type=1, 
+		@freq_subday_interval=0, 
+		@freq_relative_interval=0, 
+		@freq_recurrence_factor=0, 
+		@active_start_date=20251013, 
+		@active_end_date=99991231, 
+		@active_start_time=20000, 
+		@active_end_time=235959, 
+		@schedule_uid=N'1f0ad899-157e-4ef5-b00d-b8fdd5a76f46'
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+EXEC @ReturnCode = msdb.dbo.sp_add_jobserver @job_id = @jobId, @server_name = N'(local)'
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+COMMIT TRANSACTION
+GOTO EndSave
+QuitWithRollback:
+    IF (@@TRANCOUNT > 0) ROLLBACK TRANSACTION
+EndSave:
+GO
+
+
