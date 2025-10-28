@@ -229,3 +229,36 @@ the original Security Identifier (SID) and the original password.
 B. Steps on the destination server (Server B)
 Connect to Server B using any client tool (like SSMS) and then run the script generated in step 4 
 (output of sp_helprevlogin) from Server A.
+
+C. Audit mapping user-login (if need)
+DECLARE @dbName NVARCHAR(128);
+DECLARE db_cursor CURSOR FOR
+SELECT name FROM sys.databases WHERE database_id > 4; -- exclude system databases
+
+CREATE TABLE #Results (
+    DatabaseName NVARCHAR(128),
+    DatabaseUser NVARCHAR(128),
+    LoginName NVARCHAR(128)
+);
+
+OPEN db_cursor
+FETCH NEXT FROM db_cursor INTO @dbName
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    DECLARE @sql NVARCHAR(MAX);
+    SET @sql = 'INSERT INTO #Results
+    SELECT ''' + @dbName + ''', dp.name, sp.name
+    FROM [' + @dbName + '].sys.database_principals dp
+    JOIN sys.server_principals sp ON dp.sid = sp.sid
+    WHERE dp.type IN (''S'', ''U'')';
+
+    EXEC sp_executesql @sql;
+    FETCH NEXT FROM db_cursor INTO @dbName
+END
+
+CLOSE db_cursor
+DEALLOCATE db_cursor
+
+SELECT * FROM #Results
+DROP TABLE #Results;
