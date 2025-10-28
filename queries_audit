@@ -1,3 +1,10 @@
+-------------- check procedure create date ----------
+SELECT DB_NAME() AS DB_Name,    name AS ProcedureName,    cast (create_date as date) create_date
+FROM sys.objects
+WHERE type = 'P' -- P = SQL Stored Procedure
+	AND CAST (create_date as DATE) = CAST (GETDATE() as DATE)
+ORDER BY create_date DESC;
+
 -------- finding the procedure having text ----
 SELECT    OBJECT_NAME(object_id) AS ProcedureName,    definition
 FROM sys.sql_modules
