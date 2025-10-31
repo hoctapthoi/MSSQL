@@ -1,3 +1,22 @@
+####### check connection ############
+SELECT 
+    srv.name AS linked_server_name,
+    srv.provider AS provider_name,
+    srv.data_source,
+    CASE 
+        WHEN logins.remote_name IS NOT NULL THEN 'Yes'
+        ELSE 'No'
+    END AS remote_login_enabled,
+    CASE 
+        WHEN srv.is_data_access_enabled = 1 THEN 'Yes'
+        ELSE 'No'
+    END AS data_access_enabled,
+    logins.remote_name AS remote_user
+FROM sys.servers AS srv
+LEFT JOIN sys.linked_logins AS logins
+    ON srv.server_id = logins.server_id
+WHERE srv.is_linked = 1;
+
 ########## kiểm tra kết nối từ SQL sang Oracle ############
 SELECT *
 FROM OPENQUERY(ORACLE_LINK, 'SELECT * FROM schema_name.table_name');
