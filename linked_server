@@ -1,21 +1,132 @@
 ####### check connection ############
+SET NOCOUNT ON;
+
+IF OBJECT_ID('tempdb..#Result') IS NOT NULL DROP TABLE #Result;
+CREATE TABLE #Result (
+    Provider NVARCHAR(128),
+    LinkedServer NVARCHAR(128),
+    DataSource NVARCHAR(500),
+    RemoteUser NVARCHAR(128),
+    DataAccessEnabled VARCHAR(10),
+    OptionsTrue NVARCHAR(MAX),
+    EnabledProps NVARCHAR(MAX),
+    ConnectionStatus NVARCHAR(500)
+);
+
+DECLARE @srv NVARCHAR(128), @prov NVARCHAR(128), @ds NVARCHAR(500), @ruser NVARCHAR(128);
+DECLARE @dataAccess BIT;
+DECLARE @AllowInProcess INT, @DynamicParam INT, @NestedQueries INT, @LevelZeroOnly INT;
+
+DECLARE cur CURSOR FOR 
 SELECT 
-    srv.name AS linked_server_name,
-    srv.provider AS provider_name,
+    srv.provider, 
+    srv.name, 
     srv.data_source,
-    CASE 
-        WHEN logins.remote_name IS NOT NULL THEN 'Yes'
-        ELSE 'No'
-    END AS remote_login_enabled,
-    CASE 
-        WHEN srv.is_data_access_enabled = 1 THEN 'Yes'
-        ELSE 'No'
-    END AS data_access_enabled,
-    logins.remote_name AS remote_user
-FROM sys.servers AS srv
-LEFT JOIN sys.linked_logins AS logins
-    ON srv.server_id = logins.server_id
+    srv.is_data_access_enabled
+FROM sys.servers srv
 WHERE srv.is_linked = 1;
+
+OPEN cur;
+FETCH NEXT FROM cur INTO @prov, @srv, @ds, @dataAccess;
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    -- Get remote user (default mapping for all logins)
+    SELECT TOP 1 @ruser = ll.remote_name
+    FROM sys.linked_logins ll
+    WHERE ll.server_id = (SELECT server_id FROM sys.servers WHERE name = @srv)
+      AND ll.local_principal_id IS NULL;
+    
+    -- If no default mapping, get first mapping
+    IF @ruser IS NULL
+    BEGIN
+        SELECT TOP 1 @ruser = ll.remote_name
+        FROM sys.linked_logins ll
+        WHERE ll.server_id = (SELECT server_id FROM sys.servers WHERE name = @srv);
+    END
+    
+    -- Get provider settings
+    DECLARE @rk NVARCHAR(500) = N'SOFTWARE\Microsoft\MSSQLServer\Providers\' + @prov;
+    
+    BEGIN TRY EXEC master.dbo.xp_instance_regread N'HKEY_LOCAL_MACHINE', @rk, N'AllowInProcess', @AllowInProcess OUTPUT; END TRY BEGIN CATCH SET @AllowInProcess = NULL; END CATCH
+    BEGIN TRY EXEC master.dbo.xp_instance_regread N'HKEY_LOCAL_MACHINE', @rk, N'DynamicParameters', @DynamicParam OUTPUT; END TRY BEGIN CATCH SET @DynamicParam = NULL; END CATCH
+    BEGIN TRY EXEC master.dbo.xp_instance_regread N'HKEY_LOCAL_MACHINE', @rk, N'NestedQueries', @NestedQueries OUTPUT; END TRY BEGIN CATCH SET @NestedQueries = NULL; END CATCH
+    BEGIN TRY EXEC master.dbo.xp_instance_regread N'HKEY_LOCAL_MACHINE', @rk, N'LevelZeroOnly', @LevelZeroOnly OUTPUT; END TRY BEGIN CATCH SET @LevelZeroOnly = NULL; END CATCH
+    
+    -- Build Options TRUE list
+    DECLARE @opt NVARCHAR(MAX) = '';
+    IF @AllowInProcess = 1 SET @opt = @opt + 'AllowInProcess, ';
+    IF @DynamicParam = 1 SET @opt = @opt + 'DynamicParameters, ';
+    IF @NestedQueries = 1 SET @opt = @opt + 'NestedQueries, ';
+    IF @LevelZeroOnly = 0 SET @opt = @opt + 'LevelZeroOnly=OFF, ';
+    IF LEN(@opt) > 0 SET @opt = LEFT(@opt, LEN(@opt) - 2); ELSE SET @opt = 'None';
+    
+    -- Build Enabled Properties list
+    DECLARE @enb NVARCHAR(MAX);
+    SELECT @enb = STUFF(
+        CASE WHEN is_data_access_enabled = 1 THEN ', DataAccess' ELSE '' END +
+        CASE WHEN is_rpc_out_enabled = 1 THEN ', RpcOut' ELSE '' END +
+        CASE WHEN is_remote_login_enabled = 1 THEN ', RemoteLogin' ELSE '' END
+    , 1, 2, '')
+    FROM sys.servers WHERE name = @srv;
+    
+    -- Test connection
+    DECLARE @status NVARCHAR(500);
+    BEGIN TRY
+        DECLARE @sql NVARCHAR(500);
+        
+        -- Test based on provider type
+        IF @prov LIKE '%Oracle%'
+            SET @sql = N'SELECT 1 FROM OPENQUERY([' + @srv + '], ''SELECT 1 FROM DUAL'')';
+        ELSE IF @prov LIKE '%SQL%'
+            SET @sql = N'SELECT 1 FROM OPENQUERY([' + @srv + '], ''SELECT 1'')';
+        ELSE
+            SET @sql = N'EXEC (''SELECT 1'') AT [' + @srv + ']';
+        
+        EXEC sp_executesql @sql;
+        SET @status = 'SUCCESS';
+    END TRY
+    BEGIN CATCH
+        SET @status = 'FAILED: ' + LEFT(ERROR_MESSAGE(), 100);
+    END CATCH
+    
+    -- Insert result
+    INSERT INTO #Result VALUES (
+        @prov, 
+        @srv, 
+        @ds, 
+        @ruser, 
+        CASE WHEN @dataAccess = 1 THEN 'Yes' ELSE 'No' END,
+        @opt, 
+        NULLIF(@enb, ''),
+        @status
+    );
+    
+    SET @ruser = NULL;  -- Reset for next loop
+    
+    FETCH NEXT FROM cur INTO @prov, @srv, @ds, @dataAccess;
+END
+
+CLOSE cur;
+DEALLOCATE cur;
+
+-- Output final table
+SELECT 
+    Provider AS [Provider Name],
+    LinkedServer AS [Linked Server],
+    DataSource AS [Data Source],
+    ISNULL(RemoteUser, 'Not Set') AS [Remote User],
+    DataAccessEnabled AS [Data Access],
+    OptionsTrue AS [Options TRUE],
+    EnabledProps AS [Enabled Properties],
+    ConnectionStatus AS [Status]
+FROM #Result
+ORDER BY 
+    CASE WHEN ConnectionStatus = 'SUCCESS' THEN 1 ELSE 2 END,
+    Provider, 
+    LinkedServer;
+
+DROP TABLE #Result;
 
 ########## kiểm tra kết nối từ SQL sang Oracle ############
 SELECT *
