@@ -1,0 +1,269 @@
+-- ============================================================================
+-- MEMORY CLERKS ANALYZE
+-- ============================================================================
+
+PRINT '1. VIRTUAL ADDRESS SPACE & PROCESS MEMORY';
+PRINT '=================================================================';
+
+SELECT 
+    virtual_address_space_reserved_kb / 1024 AS VAS_Reserved_MB,
+    virtual_address_space_committed_kb / 1024 AS VAS_Committed_MB,
+    physical_memory_in_use_kb / 1024 AS Physical_Memory_MB,
+    locked_page_allocations_kb / 1024 AS Locked_Pages_MB,
+    large_page_allocations_kb / 1024 AS Large_Pages_MB,
+    total_virtual_address_space_kb / 1024 AS Total_VAS_MB
+FROM sys.dm_os_process_memory;
+
+PRINT '';
+PRINT '';
+
+-- 2. Memory Clerks Summary
+PRINT '2. MEMORY CLERKS SUMMARY';
+PRINT '=================================================================';
+
+SELECT 
+    'Buffer Pool' AS Memory_Type,
+    SUM(pages_kb) / 1024 AS Memory_MB
+FROM sys.dm_os_memory_clerks
+WHERE type = 'MEMORYCLERK_SQLBUFFERPOOL'
+UNION ALL
+SELECT 
+    'Non-Buffer Pool (Stolen Memory)',
+    SUM(pages_kb) / 1024
+FROM sys.dm_os_memory_clerks
+WHERE type <> 'MEMORYCLERK_SQLBUFFERPOOL'
+UNION ALL
+SELECT
+    'Total Tracked by Clerks',
+    SUM(pages_kb) / 1024
+FROM sys.dm_os_memory_clerks;
+
+PRINT '';
+PRINT '';
+
+-- 3. Memory Nodes
+PRINT '3. MEMORY NODES';
+PRINT '=================================================================';
+
+SELECT 
+    memory_node_id,
+    virtual_address_space_reserved_kb / 1024 AS VAS_Reserved_MB,
+    virtual_address_space_committed_kb / 1024 AS VAS_Committed_MB,
+    locked_page_allocations_kb / 1024 AS Locked_Pages_MB,
+    shared_memory_reserved_kb / 1024 AS Shared_Memory_Reserved_MB,
+    shared_memory_committed_kb / 1024 AS Shared_Memory_Committed_MB
+FROM sys.dm_os_memory_nodes
+WHERE memory_node_id < 64
+ORDER BY memory_node_id;
+
+PRINT '';
+PRINT '';
+
+-- 4. System Info
+PRINT '4. SYSTEM INFORMATION';
+PRINT '=================================================================';
+
+SELECT 
+    cpu_count,
+    hyperthread_ratio,
+    physical_memory_kb / 1024 AS Physical_Memory_MB,
+    virtual_memory_kb / 1024 AS Virtual_Memory_MB,
+    committed_kb / 1024 AS OS_Committed_MB,
+    committed_target_kb / 1024 AS OS_Committed_Target_MB,
+    stack_size_in_bytes / 1024 AS Thread_Stack_Size_KB,
+    max_workers_count AS Max_Worker_Threads
+FROM sys.dm_os_sys_info;
+
+PRINT '';
+PRINT '';
+
+-- 5. Memory Brokers
+PRINT '5. MEMORY BROKERS';
+PRINT '=================================================================';
+
+SELECT 
+    pool_id,
+    memory_broker_type,
+    allocations_kb / 1024 AS Allocations_MB,
+    allocations_kb_per_sec,
+    predicted_allocations_kb / 1024 AS Predicted_MB,
+    target_allocations_kb / 1024 AS Target_MB,
+    overall_limit_kb / 1024 AS Overall_Limit_MB
+FROM sys.dm_os_memory_brokers
+WHERE allocations_kb > 1024
+ORDER BY allocations_kb DESC;
+
+PRINT '';
+PRINT '';
+
+-- 6. Resource Semaphore (Query Memory) - FIXED
+PRINT '6. RESOURCE SEMAPHORE (Query Memory)';
+PRINT '=================================================================';
+
+SELECT 
+    resource_semaphore_id,
+    pool_id,
+    target_memory_kb / 1024 AS Target_Memory_MB,
+    max_target_memory_kb / 1024 AS Max_Target_Memory_MB,
+    total_memory_kb / 1024 AS Total_Memory_MB,
+    available_memory_kb / 1024 AS Available_Memory_MB,
+    granted_memory_kb / 1024 AS Granted_Memory_MB,
+    used_memory_kb / 1024 AS Used_Memory_MB,
+    grantee_count,
+    waiter_count,
+    timeout_error_count
+FROM sys.dm_exec_query_resource_semaphores;
+
+PRINT '';
+PRINT '';
+
+-- 7. Detailed Clerk Types consuming memory outside Buffer Pool
+PRINT '7. TOP NON-BUFFER POOL MEMORY CONSUMERS';
+PRINT '=================================================================';
+
+SELECT TOP 15
+    type,
+    name,
+    pages_kb / 1024 AS Memory_MB,
+    CAST(pages_kb * 100.0 / (SELECT SUM(pages_kb) FROM sys.dm_os_memory_clerks WHERE type <> 'MEMORYCLERK_SQLBUFFERPOOL') 
+         AS DECIMAL(5,2)) AS Percent_Of_NonBPool
+FROM sys.dm_os_memory_clerks
+WHERE type <> 'MEMORYCLERK_SQLBUFFERPOOL'
+  AND pages_kb > 1024
+ORDER BY pages_kb DESC;
+
+PRINT '';
+PRINT '';
+
+-- 8. OS Memory Clerks Detail
+PRINT '8. OS MEMORY CLERKS';
+PRINT '=================================================================';
+
+SELECT 
+    type,
+    SUM(pages_kb) / 1024 AS Total_MB,
+    COUNT(*) AS Clerk_Count
+FROM sys.dm_os_memory_clerks
+GROUP BY type
+HAVING SUM(pages_kb) > 10240  -- > 10 MB
+ORDER BY SUM(pages_kb) DESC;
+
+PRINT '';
+PRINT '';
+
+-- 9. Check for specific linked server memory usage patterns
+PRINT '9. POTENTIAL LINKED SERVER OVERHEAD';
+PRINT '=================================================================';
+
+SELECT 
+    type,
+    name,
+    pages_kb / 1024 AS Memory_MB
+FROM sys.dm_os_memory_clerks
+WHERE name LIKE '%OLE%' 
+   OR name LIKE '%Oracle%'
+   OR type LIKE '%OLEDB%'
+   OR type LIKE '%LINKEDSERVER%'
+ORDER BY pages_kb DESC;
+
+IF @@ROWCOUNT = 0
+    PRINT 'No explicit OLE DB/Linked Server memory clerks found (memory may be in untracked MemToLeave area)';
+
+PRINT '';
+PRINT '';
+
+-- 10. Final Calculation
+PRINT '10. FINAL MEMORY ANALYSIS';
+PRINT '=================================================================';
+
+DECLARE @PhysicalMem BIGINT, @BufferPool BIGINT, @TotalClerks BIGINT;
+DECLARE @VASCommitted BIGINT, @NonBufferPool BIGINT;
+DECLARE @MaxWorkers INT, @ThreadStackEstimate INT;
+
+SELECT @PhysicalMem = physical_memory_in_use_kb / 1024 
+FROM sys.dm_os_process_memory;
+
+SELECT @VASCommitted = virtual_address_space_committed_kb / 1024 
+FROM sys.dm_os_process_memory;
+
+SELECT @BufferPool = SUM(pages_kb) / 1024 
+FROM sys.dm_os_memory_clerks 
+WHERE type = 'MEMORYCLERK_SQLBUFFERPOOL';
+
+SELECT @TotalClerks = SUM(pages_kb) / 1024 
+FROM sys.dm_os_memory_clerks;
+
+SELECT @NonBufferPool = SUM(pages_kb) / 1024 
+FROM sys.dm_os_memory_clerks 
+WHERE type <> 'MEMORYCLERK_SQLBUFFERPOOL';
+
+SELECT @MaxWorkers = max_workers_count 
+FROM sys.dm_os_sys_info;
+
+SET @ThreadStackEstimate = @MaxWorkers * 4;  -- ~4MB per thread estimate
+
+PRINT '';
+PRINT 'MEMORY BREAKDOWN:';
+PRINT '-----------------------------------------------------------------';
+PRINT 'A. Physical Memory in Use:          ' + CAST(@PhysicalMem AS VARCHAR(20)) + ' MB';
+PRINT 'B. Virtual Address Space Committed: ' + CAST(@VASCommitted AS VARCHAR(20)) + ' MB';
+PRINT '';
+PRINT 'C. Buffer Pool (tracked):           ' + CAST(@BufferPool AS VARCHAR(20)) + ' MB';
+PRINT 'D. Non-Buffer Pool (tracked):       ' + CAST(@NonBufferPool AS VARCHAR(20)) + ' MB';
+PRINT 'E. Total Tracked (C+D):             ' + CAST(@TotalClerks AS VARCHAR(20)) + ' MB';
+PRINT '';
+PRINT 'F. UNTRACKED MEMORY (A-E):          ' + CAST((@PhysicalMem - @TotalClerks) AS VARCHAR(20)) + ' MB <<<';
+PRINT '';
+PRINT '-----------------------------------------------------------------';
+PRINT 'UNTRACKED MEMORY bao gồm (MemToLeave region):';
+PRINT '  1. Thread Stacks (~' + CAST(@ThreadStackEstimate AS VARCHAR(20)) + ' MB estimated for ' + CAST(@MaxWorkers AS VARCHAR(10)) + ' workers)';
+PRINT '  2. Linked Server Providers (OLE DB, ODBC) - THƯỜNG LÀ NGUYÊN NHÂN CHÍNH';
+PRINT '  3. Extended Stored Procedures';
+PRINT '  4. COM/OLE Automation Objects';
+PRINT '  5. Backup/Restore Buffers';
+PRINT '  6. DLLs và Third-party Drivers';
+PRINT '';
+PRINT 'Với 2 Oracle Linked Servers (FSS, FSSReport), phần Untracked Memory';
+PRINT 'cao là BÌNH THƯỜNG vì Oracle OLE DB Provider tốn RẤT NHIỀU memory!';
+PRINT '=================================================================';
+
+-- 11. Recommendation
+PRINT '';
+PRINT '11. KHUYẾN NGHỊ';
+PRINT '=================================================================';
+
+IF (@PhysicalMem - @TotalClerks) > 10000
+BEGIN
+    PRINT 'CẢNH BÁO: Untracked Memory > 10 GB!';
+    PRINT '';
+    PRINT 'NGUYÊN NHÂN CHỦ YẾU: LINKED SERVERS ĐẾN ORACLE';
+    PRINT '';
+    PRINT 'GIẢI PHÁP:';
+    PRINT '  1. Giảm max server memory xuống 20000 MB:';
+    PRINT '     EXEC sp_configure ''max server memory'', 20000;';
+    PRINT '     RECONFIGURE;';
+    PRINT '';
+    PRINT '  2. Tối ưu Linked Server queries (dùng OPENQUERY thay vì direct query)';
+    PRINT '  3. Giảm số lượng concurrent connections đến Linked Servers';
+    PRINT '  4. Xem xét chuyển sang ETL/batch processing thay vì real-time queries';
+    PRINT '';
+    PRINT '  Estimated breakdown:';
+    PRINT '    - Thread Stacks: ~' + CAST(@ThreadStackEstimate AS VARCHAR(20)) + ' MB';
+    PRINT '    - Oracle OLE DB Providers: ~' + CAST((@PhysicalMem - @TotalClerks - @ThreadStackEstimate) AS VARCHAR(20)) + ' MB (estimated)';
+END
+ELSE IF (@PhysicalMem - @TotalClerks) > 5000
+BEGIN
+    PRINT 'Untracked Memory: ' + CAST((@PhysicalMem - @TotalClerks) AS VARCHAR(20)) + ' MB';
+    PRINT 'Mức độ: TRUNG BÌNH - có thể chấp nhận được với Linked Servers';
+    PRINT '';
+    PRINT 'Theo dõi tiếp và xem xét giảm max server memory nếu cần.';
+END
+ELSE
+BEGIN
+    PRINT 'Untracked Memory: ' + CAST((@PhysicalMem - @TotalClerks) AS VARCHAR(20)) + ' MB';
+    PRINT 'Mức độ: BÌNH THƯỜNG';
+END
+
+PRINT '=================================================================';
+PRINT 'HOÀN THÀNH PHÂN TÍCH';
+PRINT '=================================================================';
