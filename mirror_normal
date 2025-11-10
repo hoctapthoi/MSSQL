@@ -1,0 +1,9 @@
+note:
+nếu dùng Sql service dùng local user (NT Service/MSSQLSERVER), thì cần tạo user và cấp quyền 2 đầu như
+-- Tạo login cho machine account của 1st trên 2nd
+CREATE LOGIN [LPBS\Server_Name_01$] FROM WINDOWS;
+GRANT CONNECT ON ENDPOINT::Mirroring TO [LPBS\Server_Name_01$];
+
+-- Tạo login cho machine account của 2nd trên 1st
+CREATE LOGIN [LPBS\Server_Name_02$] FROM WINDOWS;
+GRANT CONNECT ON ENDPOINT::Mirroring TO [LPBS\Server_Name_02$];
