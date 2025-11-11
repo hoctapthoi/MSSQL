@@ -1,0 +1,142 @@
+############## create table ###########
+CREATE TABLE [dbo].[Golive_audit](
+    [DB_name] [nvarchar](50) NULL,
+    [Tbl_name] [nvarchar](100) NULL,
+    [Row_count] [int] NULL,
+    [Snapshot_type] [varchar](10) NOT NULL,  -- 'BEFORE' hoặc 'AFTER'
+    [Captured_at] [datetime] NOT NULL DEFAULT (GETDATE())
+) ON [PRIMARY]
+GO
+
+-- Index để query nhanh
+CREATE INDEX IX_Golive_audit_type_date 
+ON [dbo].[Golive_audit](Snapshot_type, Captured_at);
+
+CREATE INDEX IX_Golive_audit_db_table 
+ON [dbo].[Golive_audit](DB_name, Tbl_name);
+
+############### procedure ##############
+CREATE PROCEDURE [dbo].[sp_golive_audit]
+    @db_name NVARCHAR(50),
+    @table_names NVARCHAR(MAX),
+    @snapshot_type VARCHAR(10)  -- 'BEFORE' hoặc 'AFTER'
+AS
+BEGIN
+    SET NOCOUNT ON;
+    
+    -- Validate snapshot_type
+    IF @snapshot_type NOT IN ('BEFORE', 'AFTER')
+    BEGIN
+        RAISERROR('Snapshot_type phải là BEFORE hoặc AFTER', 16, 1);
+        RETURN;
+    END
+    
+    DECLARE @table_name NVARCHAR(100);
+    DECLARE @schema_name NVARCHAR(50);
+    DECLARE @table_name_only NVARCHAR(50);
+    DECLARE @row_count INT;
+    DECLARE @sql NVARCHAR(MAX);
+    DECLARE @full_table_name NVARCHAR(100);
+    
+    -- Validate database name
+    IF NOT EXISTS (SELECT 1 FROM sys.databases WHERE name = @db_name)
+    BEGIN
+        RAISERROR('Database không tồn tại: %s', 16, 1, @db_name);
+        RETURN;
+    END
+    
+    CREATE TABLE #TempTables (TableName NVARCHAR(100));
+    
+    INSERT INTO #TempTables (TableName)
+    SELECT LTRIM(RTRIM(value)) 
+    FROM STRING_SPLIT(@table_names, ',')
+    WHERE LTRIM(RTRIM(value)) <> '';
+    
+    DECLARE table_cursor CURSOR FOR 
+    SELECT TableName FROM #TempTables;
+    
+    OPEN table_cursor;
+    FETCH NEXT FROM table_cursor INTO @table_name;
+    
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        BEGIN TRY
+            IF CHARINDEX('.', @table_name) > 0
+            BEGIN
+                SET @schema_name = LTRIM(RTRIM(SUBSTRING(@table_name, 1, CHARINDEX('.', @table_name) - 1)));
+                SET @table_name_only = LTRIM(RTRIM(SUBSTRING(@table_name, CHARINDEX('.', @table_name) + 1, LEN(@table_name))));
+            END
+            ELSE
+            BEGIN
+                SET @schema_name = 'dbo';
+                SET @table_name_only = @table_name;
+            END
+            
+            SET @sql = N'SELECT @row_count = COUNT(1) FROM ' + 
+                       QUOTENAME(@db_name) + '.' + 
+                       QUOTENAME(@schema_name) + '.' + 
+                       QUOTENAME(@table_name_only);
+            
+            EXEC sp_executesql @sql, 
+                              N'@row_count INT OUTPUT', 
+                              @row_count OUTPUT;
+            
+            SET @full_table_name = @schema_name + '.' + @table_name_only;
+            
+            -- Insert vào bảng Golive_audit
+            INSERT INTO [dbo].[Golive_audit] (DB_name, Tbl_name, Row_count, Snapshot_type)
+            VALUES (@db_name, @full_table_name, @row_count, @snapshot_type);
+            
+            PRINT @snapshot_type + ' - Success: ' + @full_table_name + ' - ' + CAST(@row_count AS NVARCHAR(20)) + ' rows';
+        END TRY
+        BEGIN CATCH
+            PRINT 'Error with table ' + @table_name + ': ' + ERROR_MESSAGE();
+        END CATCH
+        
+        FETCH NEXT FROM table_cursor INTO @table_name;
+    END
+    
+    CLOSE table_cursor;
+    DEALLOCATE table_cursor;
+    DROP TABLE #TempTables;
+    
+    -- Hiển thị kết quả
+    SELECT DB_name, Tbl_name, Row_count, Snapshot_type, Captured_at
+    FROM [dbo].[Golive_audit]
+    WHERE DB_name = @db_name 
+      AND Snapshot_type = @snapshot_type
+      AND CAST(Captured_at AS DATE) = CAST(GETDATE() AS DATE)
+    ORDER BY Captured_at DESC;
+END
+GO
+
+########### how to use #############
+-- TRƯỚC khi golive
+EXEC sp_golive_audit 
+    @db_name = 'MyDatabase', 
+    @table_names = 'Sales.Orders, HR.Employees, dbo.Products',
+    @snapshot_type = 'BEFORE';
+
+-- SAU khi golive
+EXEC sp_golive_audit 
+    @db_name = 'MyDatabase', 
+    @table_names = 'Sales.Orders, HR.Employees, dbo.Products',
+    @snapshot_type = 'AFTER';
+
+-- So sánh kết quả
+SELECT 
+    DB_name,
+    Tbl_name,
+    MAX(CASE WHEN Snapshot_type = 'BEFORE' THEN Row_count END) AS Before_count,
+    MAX(CASE WHEN Snapshot_type = 'AFTER' THEN Row_count END) AS After_count,
+    MAX(CASE WHEN Snapshot_type = 'AFTER' THEN Row_count END) - 
+    MAX(CASE WHEN Snapshot_type = 'BEFORE' THEN Row_count END) AS Difference,
+    CASE 
+        WHEN MAX(CASE WHEN Snapshot_type = 'AFTER' THEN Row_count END) = 
+             MAX(CASE WHEN Snapshot_type = 'BEFORE' THEN Row_count END) 
+        THEN '✓ OK'
+        ELSE '✗ CHANGED'
+    END AS Status
+FROM Golive_audit
+WHERE CAST(Captured_at AS DATE) = CAST(GETDATE() AS DATE)
+GROUP BY DB_name, Tbl_name;
