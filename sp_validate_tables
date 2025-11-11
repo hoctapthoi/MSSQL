@@ -1,0 +1,151 @@
+######## create store procedure #############
+CREATE PROCEDURE [dbo].[sp_validate_tables]
+    @db_name NVARCHAR(50),
+    @table_names NVARCHAR(MAX)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    
+    -- Validate database name
+    IF NOT EXISTS (SELECT 1 FROM sys.databases WHERE name = @db_name)
+    BEGIN
+        SELECT 
+            @db_name AS DB_name,
+            'DATABASE_NOT_EXISTS' AS Status;
+        RETURN 1;
+    END
+    
+    DECLARE @table_name NVARCHAR(100);
+    DECLARE @schema_name NVARCHAR(50);
+    DECLARE @table_name_only NVARCHAR(50);
+    DECLARE @sql NVARCHAR(MAX);
+    DECLARE @table_exists BIT;
+    DECLARE @full_table_name NVARCHAR(100);
+    
+    -- Tạo temp table để lưu kết quả validation
+    CREATE TABLE #ValidationResults (
+        DB_name NVARCHAR(50),
+        Table_name NVARCHAR(100),
+        Schema_name NVARCHAR(50),
+        Table_name_only NVARCHAR(50),
+        [Exists] BIT,
+        Status VARCHAR(20)
+    );
+    
+    -- Parse danh sách table names
+    CREATE TABLE #TempTables (TableName NVARCHAR(100));
+    
+    INSERT INTO #TempTables (TableName)
+    SELECT LTRIM(RTRIM(value)) 
+    FROM STRING_SPLIT(@table_names, ',')
+    WHERE LTRIM(RTRIM(value)) <> '';
+    
+    -- Cursor để duyệt qua từng table
+    DECLARE table_cursor CURSOR FOR 
+    SELECT TableName FROM #TempTables;
+    
+    OPEN table_cursor;
+    FETCH NEXT FROM table_cursor INTO @table_name;
+    
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        BEGIN TRY
+            -- Parse schema và table name
+            IF CHARINDEX('.', @table_name) > 0
+            BEGIN
+                SET @schema_name = LTRIM(RTRIM(SUBSTRING(@table_name, 1, CHARINDEX('.', @table_name) - 1)));
+                SET @table_name_only = LTRIM(RTRIM(SUBSTRING(@table_name, CHARINDEX('.', @table_name) + 1, LEN(@table_name))));
+            END
+            ELSE
+            BEGIN
+                SET @schema_name = 'dbo';
+                SET @table_name_only = @table_name;
+            END
+            
+            SET @full_table_name = @schema_name + '.' + @table_name_only;
+            
+            -- Kiểm tra table có tồn tại không
+            SET @sql = N'
+                SELECT @table_exists = CASE 
+                    WHEN EXISTS (
+                        SELECT 1 
+                        FROM ' + QUOTENAME(@db_name) + '.sys.tables t
+                        INNER JOIN ' + QUOTENAME(@db_name) + '.sys.schemas s ON t.schema_id = s.schema_id
+                        WHERE s.name = @schema_name 
+                        AND t.name = @table_name_only
+                    ) THEN 1 
+                    ELSE 0 
+                END';
+            
+            EXEC sp_executesql @sql, 
+                N'@schema_name NVARCHAR(50), @table_name_only NVARCHAR(50), @table_exists BIT OUTPUT',
+                @schema_name, @table_name_only, @table_exists OUTPUT;
+            
+            -- Lưu kết quả
+            IF @table_exists = 1
+            BEGIN
+                INSERT INTO #ValidationResults (DB_name, Table_name, Schema_name, Table_name_only, [Exists], Status)
+                VALUES (@db_name, @full_table_name, @schema_name, @table_name_only, 1, 'OK');
+            END
+            ELSE
+            BEGIN
+                INSERT INTO #ValidationResults (DB_name, Table_name, Schema_name, Table_name_only, [Exists], Status)
+                VALUES (@db_name, @full_table_name, @schema_name, @table_name_only, 0, 'NOT_FOUND');
+            END
+        END TRY
+        BEGIN CATCH
+            INSERT INTO #ValidationResults (DB_name, Table_name, Schema_name, Table_name_only, [Exists], Status)
+            VALUES (@db_name, @table_name, NULL, NULL, 0, 'ERROR');
+        END CATCH
+        
+        FETCH NEXT FROM table_cursor INTO @table_name;
+    END
+    
+    CLOSE table_cursor;
+    DEALLOCATE table_cursor;
+    DROP TABLE #TempTables;
+    
+    -- Tổng hợp kết quả
+    DECLARE @total_tables INT;
+    DECLARE @valid_tables INT;
+    DECLARE @invalid_tables INT;
+    
+    SELECT 
+        @total_tables = COUNT(*),
+        @valid_tables = SUM(CASE WHEN [Exists] = 1 THEN 1 ELSE 0 END),
+        @invalid_tables = SUM(CASE WHEN [Exists] = 0 THEN 1 ELSE 0 END)
+    FROM #ValidationResults;
+    
+    -- Hiển thị kết quả chi tiết
+    SELECT 
+        DB_name,
+        Table_name,
+        Schema_name,
+        Table_name_only,
+        [Exists],
+        Status
+    FROM #ValidationResults
+    ORDER BY [Exists] DESC, Table_name;
+    
+    -- Hiển thị tổng kết
+    PRINT '==========================================';
+    PRINT 'VALIDATION SUMMARY:';
+    PRINT 'Total tables: ' + CAST(@total_tables AS VARCHAR(10));
+    PRINT 'Valid tables: ' + CAST(@valid_tables AS VARCHAR(10));
+    PRINT 'Invalid tables: ' + CAST(@invalid_tables AS VARCHAR(10));
+    PRINT '==========================================';
+    
+    DROP TABLE #ValidationResults;
+    
+    -- Return code
+    IF @invalid_tables > 0
+        RETURN 1;  -- Có table không tồn tại
+    ELSE
+        RETURN 0;  -- Tất cả table đều OK
+END
+GO
+
+######### check ################
+EXEC sp_validate_tables
+  @db_name = 'xxxx'
+  @table_names= 'yyy, abc.zzzz'
