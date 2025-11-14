@@ -45,10 +45,10 @@ GO
 USE master;
 GO
 
-CREATE OR ALTER PROCEDURE dbo.usp_CloneTable_Simple
+CREATE OR ALTER PROCEDURE dbo.usp_CloneTable
     @db_name NVARCHAR(128),
     @table_list NVARCHAR(MAX),
-    @return_code INT OUTPUT,
+    @return_code INT = NULL OUTPUT,
     @job_name NVARCHAR(128) = NULL,
     @copy_data BIT = 1
 AS
@@ -288,3 +288,24 @@ BEGIN
     RETURN @return_code;
 END
 GO
+
+############ 3. clone table ############
+## Cách 1: Đơn giản (không cần biến)
+# sql-- Gọi trực tiếp - KHÔNG CẦN @result
+EXEC master.dbo.usp_CloneTable_Simple
+    @db_name = 'FIIN_AddMore4',
+    @table_list = 'stx_cpf_Company_CompanyGroup,dbo.stx_cpf_CompanyOverview';
+
+## Cách 2: Với return code (khi cần check)
+# sql-- Vẫn có thể check return code nếu cần
+DECLARE @result INT;
+
+EXEC master.dbo.usp_CloneTable_Simple
+    @db_name = 'FIIN_AddMore4',
+    @table_list = 'stx_cpf_Company_CompanyGroup',
+    @return_code = @result OUTPUT;
+
+IF @result <> 0
+    PRINT '❌ Some tables failed';
+
+
