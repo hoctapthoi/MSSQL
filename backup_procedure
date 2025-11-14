@@ -1,0 +1,298 @@
+########## 1. create db, table for storing result #############
+CREATE DATABASE DB_monitor;
+
+USE DB_monitor;
+GO
+
+CREATE TABLE dbo.bk_sp_result (
+    -- Primary Key
+    log_id BIGINT IDENTITY(1,1) PRIMARY KEY,
+    
+    -- Thông tin cơ bản
+    database_name NVARCHAR(128) NOT NULL,
+    source_sp_name NVARCHAR(128) NOT NULL,
+    backup_sp_name NVARCHAR(256) NULL,
+    
+    -- Kết quả
+    status NVARCHAR(20) NOT NULL,  -- 'SUCCESS', 'FAILED'
+    error_message NVARCHAR(MAX) NULL,
+    
+    -- Audit
+    created_date DATETIME2 NOT NULL DEFAULT GETDATE(),
+    created_by NVARCHAR(128) NOT NULL DEFAULT SUSER_SNAME(),
+    execution_time_ms INT NULL,
+    
+    -- Metadata
+    job_name NVARCHAR(128) NULL,  -- Nếu chạy từ job
+    server_name NVARCHAR(128) NOT NULL DEFAULT @@SERVERNAME
+);
+GO
+
+-- Index
+CREATE NONCLUSTERED INDEX IX_bk_sp_result_status 
+    ON dbo.bk_sp_result(status, created_date DESC);
+
+CREATE NONCLUSTERED INDEX IX_bk_sp_result_source 
+    ON dbo.bk_sp_result(database_name, source_sp_name, created_date DESC);
+GO
+
+######## 2. backup_procedure ###########
+USE master;
+GO
+
+CREATE OR ALTER PROCEDURE dbo.usp_CloneStoredProcedure_Simple
+    @db_name NVARCHAR(128),
+    @sp_list NVARCHAR(MAX),
+    @return_code INT OUTPUT,
+    @job_name NVARCHAR(128) = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    
+    DECLARE @sql NVARCHAR(MAX);
+    DECLARE @sp_name NVARCHAR(128);
+    DECLARE @new_name NVARCHAR(128);
+    DECLARE @timestamp VARCHAR(8) = CONVERT(VARCHAR(8), GETDATE(), 112);
+    DECLARE @error_msg NVARCHAR(MAX);
+    DECLARE @start_time DATETIME2;
+    DECLARE @end_time DATETIME2;
+    DECLARE @execution_ms INT;
+    
+    DECLARE @total_count INT = 0;
+    DECLARE @success_count INT = 0;
+    DECLARE @failed_count INT = 0;
+    
+    SET @return_code = 0;
+    
+    CREATE TABLE #Results (
+        sp_name NVARCHAR(128),
+        backup_name NVARCHAR(256),
+        status NVARCHAR(20),
+        error_msg NVARCHAR(MAX),
+        execution_ms INT
+    );
+    
+    BEGIN TRY
+        IF NOT EXISTS (SELECT 1 FROM sys.databases WHERE name = @db_name)
+        BEGIN
+            SET @error_msg = 'Database [' + @db_name + '] does not exist';
+            RAISERROR(@error_msg, 16, 1);
+        END
+        
+        PRINT '========================================';
+        PRINT 'CLONE STORED PROCEDURE BACKUP';
+        PRINT '========================================';
+        PRINT 'Database: ' + @db_name;
+        PRINT 'Timestamp: ' + @timestamp;
+        PRINT '';
+        
+        DECLARE @current_pos INT = 1;
+        DECLARE @comma_pos INT;
+        DECLARE @temp_sp NVARCHAR(128);
+        
+        SET @sp_list = LTRIM(RTRIM(@sp_list)) + ',';
+        
+        WHILE @current_pos <= LEN(@sp_list)
+        BEGIN
+            SET @comma_pos = CHARINDEX(',', @sp_list, @current_pos);
+            
+            IF @comma_pos = 0
+                BREAK;
+            
+            SET @temp_sp = LTRIM(RTRIM(SUBSTRING(@sp_list, @current_pos, @comma_pos - @current_pos)));
+            
+            IF LEN(@temp_sp) > 0
+            BEGIN
+                SET @sp_name = @temp_sp;
+                SET @total_count = @total_count + 1;
+                SET @start_time = GETDATE();
+                
+                PRINT '----------------------------------------';
+                PRINT 'Processing [' + CAST(@total_count AS VARCHAR(10)) + ']: ' + @sp_name;
+                PRINT '----------------------------------------';
+                
+                BEGIN TRY
+                    DECLARE @clean_name NVARCHAR(128) = @sp_name;
+                    
+                    IF LEFT(@clean_name, 2) = 'Z_'
+                        SET @clean_name = SUBSTRING(@clean_name, 3, LEN(@clean_name));
+                    
+                    DECLARE @bk_pos INT = CHARINDEX('_BK', @clean_name);
+                    IF @bk_pos > 0
+                        SET @clean_name = LEFT(@clean_name, @bk_pos - 1);
+                    
+                    SET @new_name = 'Z_' + @clean_name + '_BK' + @timestamp;
+                    
+                    PRINT '  Source: [' + @sp_name + ']';
+                    PRINT '  Backup: [' + @new_name + ']';
+                    
+                    -- ===========================================
+                    -- FIX: LẤY TÊN THỰC TẾ TỪ DEFINITION
+                    -- ===========================================
+                    SET @sql = N'
+USE [' + @db_name + N'];
+
+DECLARE @def NVARCHAR(MAX);
+DECLARE @actual_name NVARCHAR(128);
+DECLARE @start_pos INT;
+DECLARE @end_pos INT;
+
+-- Get definition
+SELECT @def = m.definition
+FROM sys.sql_modules m
+INNER JOIN sys.objects o ON m.object_id = o.object_id
+WHERE o.name = N''' + @sp_name + N''' AND o.type = ''P'';
+
+IF @def IS NULL
+    RAISERROR(''Source not found'', 16, 1);
+
+-- Drop existing backup
+IF OBJECT_ID(N''' + @new_name + N''', ''P'') IS NOT NULL
+    DROP PROCEDURE [' + @new_name + N'];
+
+-- ============================================
+-- EXTRACT TÊN THỰC TẾ TỪ DEFINITION
+-- ============================================
+-- Tìm "CREATE PROCEDURE [dbo].[" hoặc "ALTER PROCEDURE [dbo].["
+SET @start_pos = CHARINDEX(''CREATE PROCEDURE'', @def);
+IF @start_pos = 0
+    SET @start_pos = CHARINDEX(''ALTER PROCEDURE'', @def);
+IF @start_pos = 0
+    SET @start_pos = CHARINDEX(''CREATE PROC'', @def);
+IF @start_pos = 0
+    SET @start_pos = CHARINDEX(''ALTER PROC'', @def);
+
+IF @start_pos = 0
+    RAISERROR(''Cannot find CREATE/ALTER PROCEDURE'', 16, 1);
+
+-- Tìm vị trí bắt đầu tên (sau [dbo].[)
+SET @start_pos = CHARINDEX(''[dbo].'', @def, @start_pos);
+IF @start_pos > 0
+BEGIN
+    SET @start_pos = @start_pos + 6; -- Length of "[dbo]."
+    -- Tìm bracket mở
+    SET @start_pos = CHARINDEX(''['', @def, @start_pos) + 1;
+    -- Tìm bracket đóng
+    SET @end_pos = CHARINDEX('']'', @def, @start_pos);
+    
+    -- Extract tên
+    SET @actual_name = SUBSTRING(@def, @start_pos, @end_pos - @start_pos);
+    
+    PRINT ''  → Actual name in definition: ['' + @actual_name + '']'';
+END
+ELSE
+BEGIN
+    RAISERROR(''Cannot parse procedure name from definition'', 16, 1);
+END
+
+-- ============================================
+-- REPLACE TÊN TRONG DEFINITION
+-- ============================================
+-- Replace [dbo].[actual_name] với [dbo].[new_name]
+DECLARE @old_full NVARCHAR(300) = ''[dbo].['' + @actual_name + '']'';
+DECLARE @new_full NVARCHAR(300) = ''[dbo].[' + @new_name + N']'';
+
+SET @def = REPLACE(@def, @old_full, @new_full);
+
+-- Also replace CREATE/ALTER with CREATE
+SET @def = REPLACE(@def, ''ALTER PROCEDURE'', ''CREATE PROCEDURE'');
+SET @def = REPLACE(@def, ''ALTER PROC'', ''CREATE PROCEDURE'');
+
+-- Execute
+EXEC(@def);
+
+-- Verify
+IF OBJECT_ID(N''' + @new_name + N''', ''P'') IS NULL
+    RAISERROR(''Not created'', 16, 1);
+';
+                    
+                    -- Execute
+                    EXEC sp_executesql @sql;
+                    
+                    SET @end_time = GETDATE();
+                    SET @execution_ms = DATEDIFF(MILLISECOND, @start_time, @end_time);
+                    
+                    -- Log success
+                    INSERT INTO DB_monitor.dbo.bk_sp_result (
+                        database_name, source_sp_name, backup_sp_name, status, 
+                        error_message, created_date, created_by, execution_time_ms, 
+                        job_name, server_name
+                    )
+                    VALUES (
+                        @db_name, @sp_name, @new_name, 'SUCCESS',
+                        NULL, @start_time, SUSER_SNAME(), @execution_ms,
+                        @job_name, @@SERVERNAME
+                    );
+                    
+                    INSERT INTO #Results (sp_name, backup_name, status, error_msg, execution_ms)
+                    VALUES (@sp_name, @new_name, 'SUCCESS', NULL, @execution_ms);
+                    
+                    PRINT '  SUCCESS (' + CAST(@execution_ms AS VARCHAR(10)) + ' ms)';
+                    SET @success_count = @success_count + 1;
+                    
+                END TRY
+                BEGIN CATCH
+                    SET @end_time = GETDATE();
+                    SET @execution_ms = DATEDIFF(MILLISECOND, @start_time, @end_time);
+                    SET @error_msg = ERROR_MESSAGE();
+                    
+                    INSERT INTO DB_monitor.dbo.bk_sp_result (
+                        database_name, source_sp_name, backup_sp_name, status,
+                        error_message, created_date, created_by, execution_time_ms,
+                        job_name, server_name
+                    )
+                    VALUES (
+                        @db_name, @sp_name, NULL, 'FAILED',
+                        @error_msg, @start_time, SUSER_SNAME(), @execution_ms,
+                        @job_name, @@SERVERNAME
+                    );
+                    
+                    INSERT INTO #Results (sp_name, backup_name, status, error_msg, execution_ms)
+                    VALUES (@sp_name, NULL, 'FAILED', @error_msg, @execution_ms);
+                    
+                    PRINT '  FAILED: ' + @error_msg;
+                    SET @failed_count = @failed_count + 1;
+                    SET @return_code = 1;
+                END CATCH
+                
+                PRINT '';
+            END
+            
+            SET @current_pos = @comma_pos + 1;
+        END
+        
+        PRINT '========================================';
+        PRINT 'SUMMARY';
+        PRINT '========================================';
+        PRINT 'Total: ' + CAST(@total_count AS VARCHAR(10));
+        PRINT 'Success: ' + CAST(@success_count AS VARCHAR(10));
+        PRINT 'Failed: ' + CAST(@failed_count AS VARCHAR(10));
+        PRINT '========================================';
+        PRINT '';
+        
+        SELECT 
+            ROW_NUMBER() OVER (ORDER BY sp_name) AS [#],
+            sp_name AS [Source SP],
+            backup_name AS [Backup SP],
+            status AS [Status],
+            ISNULL(CAST(execution_ms AS VARCHAR(10)) + ' ms', 'N/A') AS [Time],
+            ISNULL(LEFT(error_msg, 100), '') AS [Error]
+        FROM #Results;
+        
+    END TRY
+    BEGIN CATCH
+        SET @error_msg = ERROR_MESSAGE();
+        SET @return_code = 1;
+        
+        PRINT '========================================';
+        PRINT 'CRITICAL ERROR';
+        PRINT '========================================';
+        PRINT @error_msg;
+        PRINT '========================================';
+    END CATCH
+    
+    DROP TABLE #Results;
+    
+    RETURN @return_code;
+END
+GO
