@@ -1,0 +1,290 @@
+############## 1. create DB, table for storing result #########
+
+CREATE DATABASE DB_monitor;
+
+USE DB_monitor;
+GO
+
+CREATE TABLE dbo.bk_tbl_result (
+    -- Primary Key
+    log_id BIGINT IDENTITY(1,1) PRIMARY KEY,
+    
+    -- Thông tin cơ bản
+    database_name NVARCHAR(128) NOT NULL,
+    source_table_name NVARCHAR(128) NOT NULL,
+    backup_table_name NVARCHAR(256) NULL,
+    
+    -- Kết quả
+    status NVARCHAR(20) NOT NULL,  -- 'SUCCESS', 'FAILED'
+    error_message NVARCHAR(MAX) NULL,
+    
+    -- Thông tin backup
+    rows_copied BIGINT NULL,
+    table_size_mb DECIMAL(10,2) NULL,
+    
+    -- Audit
+    created_date DATETIME2 NOT NULL DEFAULT GETDATE(),
+    created_by NVARCHAR(128) NOT NULL DEFAULT SUSER_SNAME(),
+    execution_time_ms INT NULL,
+    
+    -- Metadata
+    job_name NVARCHAR(128) NULL,
+    server_name NVARCHAR(128) NOT NULL DEFAULT @@SERVERNAME
+);
+GO
+
+-- Index
+CREATE NONCLUSTERED INDEX IX_bk_tbl_result_status 
+    ON dbo.bk_tbl_result(status, created_date DESC);
+
+CREATE NONCLUSTERED INDEX IX_bk_tbl_result_source 
+    ON dbo.bk_tbl_result(database_name, source_table_name, created_date DESC);
+GO
+
+########### 2. backup table procedure ############
+USE master;
+GO
+
+CREATE OR ALTER PROCEDURE dbo.usp_CloneTable_Simple
+    @db_name NVARCHAR(128),
+    @table_list NVARCHAR(MAX),
+    @return_code INT OUTPUT,
+    @job_name NVARCHAR(128) = NULL,
+    @copy_data BIT = 1
+AS
+BEGIN
+    SET NOCOUNT ON;
+    
+    DECLARE @sql NVARCHAR(MAX);
+    DECLARE @table_name NVARCHAR(128);
+    DECLARE @schema_name NVARCHAR(128);
+    DECLARE @full_table_name NVARCHAR(270);
+    DECLARE @new_name NVARCHAR(128);
+    DECLARE @timestamp VARCHAR(8) = CONVERT(VARCHAR(8), GETDATE(), 112);
+    DECLARE @error_msg NVARCHAR(MAX);
+    DECLARE @start_time DATETIME2;
+    DECLARE @end_time DATETIME2;
+    DECLARE @execution_ms INT;
+    
+    DECLARE @total_count INT = 0;
+    DECLARE @success_count INT = 0;
+    DECLARE @failed_count INT = 0;
+    
+    SET @return_code = 0;
+    
+    CREATE TABLE #Results (
+        table_name NVARCHAR(270),
+        backup_name NVARCHAR(256),
+        status NVARCHAR(20),
+        rows_copied BIGINT,
+        error_msg NVARCHAR(MAX),
+        execution_ms INT
+    );
+    
+    BEGIN TRY
+        IF NOT EXISTS (SELECT 1 FROM sys.databases WHERE name = @db_name)
+        BEGIN
+            SET @error_msg = 'Database [' + @db_name + '] does not exist';
+            RAISERROR(@error_msg, 16, 1);
+        END
+        
+        PRINT '========================================';
+        PRINT 'CLONE TABLE BACKUP';
+        PRINT '========================================';
+        PRINT 'Database: ' + @db_name;
+        PRINT 'Timestamp: ' + @timestamp;
+        PRINT 'Copy Data: ' + CASE WHEN @copy_data = 1 THEN 'YES' ELSE 'NO (Structure only)' END;
+        PRINT '';
+        
+        DECLARE @current_pos INT = 1;
+        DECLARE @comma_pos INT;
+        DECLARE @temp_table NVARCHAR(270);
+        
+        SET @table_list = LTRIM(RTRIM(@table_list)) + ',';
+        
+        WHILE @current_pos <= LEN(@table_list)
+        BEGIN
+            SET @comma_pos = CHARINDEX(',', @table_list, @current_pos);
+            
+            IF @comma_pos = 0
+                BREAK;
+            
+            SET @temp_table = LTRIM(RTRIM(SUBSTRING(@table_list, @current_pos, @comma_pos - @current_pos)));
+            
+            IF LEN(@temp_table) > 0
+            BEGIN
+                SET @total_count = @total_count + 1;
+                SET @start_time = GETDATE();
+                
+                PRINT '----------------------------------------';
+                PRINT 'Processing [' + CAST(@total_count AS VARCHAR(10)) + ']: ' + @temp_table;
+                PRINT '----------------------------------------';
+                
+                BEGIN TRY
+                    -- Parse schema.table
+                    DECLARE @dot_pos INT;
+                    
+                    SET @temp_table = REPLACE(@temp_table, '[', '');
+                    SET @temp_table = REPLACE(@temp_table, ']', '');
+                    
+                    SET @dot_pos = CHARINDEX('.', @temp_table);
+                    
+                    IF @dot_pos > 0
+                    BEGIN
+                        SET @schema_name = LEFT(@temp_table, @dot_pos - 1);
+                        SET @table_name = SUBSTRING(@temp_table, @dot_pos + 1, LEN(@temp_table));
+                    END
+                    ELSE
+                    BEGIN
+                        SET @schema_name = 'dbo';
+                        SET @table_name = @temp_table;
+                    END
+                    
+                    SET @full_table_name = @schema_name + '.' + @table_name;
+                    
+                    PRINT '  Input: [' + @temp_table + ']';
+                    PRINT '  Parsed: [' + @schema_name + '].[' + @table_name + ']';
+                    
+                    -- Create backup name
+                    DECLARE @clean_name NVARCHAR(128) = @table_name;
+                    
+                    IF LEFT(@clean_name, 2) = 'Z_'
+                        SET @clean_name = SUBSTRING(@clean_name, 3, LEN(@clean_name));
+                    
+                    DECLARE @bk_pos INT = CHARINDEX('_BK', @clean_name);
+                    IF @bk_pos > 0
+                        SET @clean_name = LEFT(@clean_name, @bk_pos - 1);
+                    
+                    SET @new_name = 'Z_' + @clean_name + '_BK' + @timestamp;
+                    
+                    PRINT '  Backup: [' + @schema_name + '].[' + @new_name + ']';
+                    
+                    -- ===========================================
+                    -- SUPER SIMPLE - CHỈ BUILD SQL STRING
+                    -- ===========================================
+                    DECLARE @source_full NVARCHAR(300) = QUOTENAME(@schema_name) + '.' + QUOTENAME(@table_name);
+                    DECLARE @backup_full NVARCHAR(300) = QUOTENAME(@schema_name) + '.' + QUOTENAME(@new_name);
+                    
+                    -- Build SQL - NO PARAMETERS, NO NESTED
+                    SET @sql = N'USE [' + @db_name + N'];' + CHAR(13) + CHAR(10);
+                    
+                    -- Check table exists
+                    SET @sql = @sql + N'IF OBJECT_ID(N''' + @source_full + N''', ''U'') IS NULL' + CHAR(13) + CHAR(10);
+                    SET @sql = @sql + N'    RAISERROR(''Source table not found'', 16, 1);' + CHAR(13) + CHAR(10);
+                    
+                    -- Drop existing backup
+                    SET @sql = @sql + N'IF OBJECT_ID(N''' + @backup_full + N''', ''U'') IS NOT NULL' + CHAR(13) + CHAR(10);
+                    SET @sql = @sql + N'    DROP TABLE ' + @backup_full + ';' + CHAR(13) + CHAR(10);
+                    
+                    -- Clone table
+                    IF @copy_data = 1
+                    BEGIN
+                        SET @sql = @sql + N'SELECT * INTO ' + @backup_full + N' FROM ' + @source_full + ';' + CHAR(13) + CHAR(10);
+                    END
+                    ELSE
+                    BEGIN
+                        SET @sql = @sql + N'SELECT * INTO ' + @backup_full + N' FROM ' + @source_full + N' WHERE 1=0;' + CHAR(13) + CHAR(10);
+                    END
+                    
+                    -- Return row count
+                    SET @sql = @sql + N'SELECT COUNT_BIG(*) AS row_count FROM ' + @backup_full + ';';
+                    
+                    -- Execute
+                    DECLARE @row_count_table TABLE (row_count BIGINT);
+                    
+                    INSERT INTO @row_count_table
+                    EXEC sp_executesql @sql;
+                    
+                    DECLARE @rows_copied BIGINT;
+                    SELECT @rows_copied = row_count FROM @row_count_table;
+                    
+                    SET @end_time = GETDATE();
+                    SET @execution_ms = DATEDIFF(MILLISECOND, @start_time, @end_time);
+                    
+                    -- Log success
+                    INSERT INTO DB_monitor.dbo.bk_tbl_result (
+                        database_name, source_table_name, backup_table_name, status, 
+                        error_message, rows_copied, table_size_mb, created_date, 
+                        created_by, execution_time_ms, job_name, server_name
+                    )
+                    VALUES (
+                        @db_name, @full_table_name, @schema_name + '.' + @new_name, 'SUCCESS',
+                        NULL, @rows_copied, NULL, @start_time,
+                        SUSER_SNAME(), @execution_ms, @job_name, @@SERVERNAME
+                    );
+                    
+                    INSERT INTO #Results (table_name, backup_name, status, rows_copied, error_msg, execution_ms)
+                    VALUES (@full_table_name, @schema_name + '.' + @new_name, 'SUCCESS', @rows_copied, NULL, @execution_ms);
+                    
+                    PRINT '  SUCCESS - ' + CAST(@rows_copied AS VARCHAR(20)) + ' rows (' + CAST(@execution_ms AS VARCHAR(10)) + ' ms)';
+                    SET @success_count = @success_count + 1;
+                    
+                    DELETE FROM @row_count_table;
+                    
+                END TRY
+                BEGIN CATCH
+                    SET @end_time = GETDATE();
+                    SET @execution_ms = DATEDIFF(MILLISECOND, @start_time, @end_time);
+                    SET @error_msg = ERROR_MESSAGE();
+                    
+                    INSERT INTO DB_monitor.dbo.bk_tbl_result (
+                        database_name, source_table_name, backup_table_name, status,
+                        error_message, rows_copied, table_size_mb, created_date,
+                        created_by, execution_time_ms, job_name, server_name
+                    )
+                    VALUES (
+                        @db_name, ISNULL(@full_table_name, @temp_table), NULL, 'FAILED',
+                        @error_msg, NULL, NULL, @start_time,
+                        SUSER_SNAME(), @execution_ms, @job_name, @@SERVERNAME
+                    );
+                    
+                    INSERT INTO #Results (table_name, backup_name, status, rows_copied, error_msg, execution_ms)
+                    VALUES (ISNULL(@full_table_name, @temp_table), NULL, 'FAILED', NULL, @error_msg, @execution_ms);
+                    
+                    PRINT '  FAILED: ' + @error_msg;
+                    SET @failed_count = @failed_count + 1;
+                    SET @return_code = 1;
+                END CATCH
+                
+                PRINT '';
+            END
+            
+            SET @current_pos = @comma_pos + 1;
+        END
+        
+        PRINT '========================================';
+        PRINT 'SUMMARY';
+        PRINT '========================================';
+        PRINT 'Total: ' + CAST(@total_count AS VARCHAR(10));
+        PRINT 'Success: ' + CAST(@success_count AS VARCHAR(10));
+        PRINT 'Failed: ' + CAST(@failed_count AS VARCHAR(10));
+        PRINT '========================================';
+        PRINT '';
+        
+        SELECT 
+            ROW_NUMBER() OVER (ORDER BY table_name) AS [#],
+            table_name AS [Source Table],
+            backup_name AS [Backup Table],
+            status AS [Status],
+            CAST(ISNULL(rows_copied, 0) AS VARCHAR(20)) AS [Rows],
+            ISNULL(CAST(execution_ms AS VARCHAR(10)) + ' ms', 'N/A') AS [Time],
+            ISNULL(LEFT(error_msg, 100), '') AS [Error]
+        FROM #Results;
+        
+    END TRY
+    BEGIN CATCH
+        SET @error_msg = ERROR_MESSAGE();
+        SET @return_code = 1;
+        
+        PRINT '========================================';
+        PRINT 'CRITICAL ERROR';
+        PRINT '========================================';
+        PRINT @error_msg;
+        PRINT '========================================';
+    END CATCH
+    
+    DROP TABLE #Results;
+    
+    RETURN @return_code;
+END
+GO
