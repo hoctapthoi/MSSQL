@@ -197,3 +197,8 @@ BEGIN
     END CATCH
 END
 GO
+
+####### 3. backup SP ##########
+EXEC BackupStoredProcedures
+	@dbname = 'adventureworks2019',
+	@list = 'uspPrintError,uspLOgError'
