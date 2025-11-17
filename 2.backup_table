@@ -60,7 +60,7 @@ BEGIN
     DECLARE @schema_name NVARCHAR(128);
     DECLARE @full_table_name NVARCHAR(270);
     DECLARE @new_name NVARCHAR(128);
-    DECLARE @timestamp VARCHAR(8) = CONVERT(VARCHAR(8), GETDATE(), 112);
+    DECLARE @timestamp VARCHAR(13) = FORMAT(GETDATE(), 'yyyyMMdd_HHmm');
     DECLARE @error_msg NVARCHAR(MAX);
     DECLARE @start_time DATETIME2;
     DECLARE @end_time DATETIME2;
@@ -292,7 +292,7 @@ GO
 ############ 3. clone table ############
 ## Cách 1: Đơn giản (không cần biến)
 # sql-- Gọi trực tiếp - KHÔNG CẦN @result
-EXEC master.dbo.usp_CloneTable_Simple
+EXEC master.dbo.backup_table
     @db_name = 'FIIN_AddMore4',
     @table_list = 'stx_cpf_Company_CompanyGroup,dbo.stx_cpf_CompanyOverview';
 
@@ -300,12 +300,12 @@ EXEC master.dbo.usp_CloneTable_Simple
 # sql-- Vẫn có thể check return code nếu cần
 DECLARE @result INT;
 
-EXEC master.dbo.usp_CloneTable_Simple
+EXEC master.dbo.backup_table
     @db_name = 'FIIN_AddMore4',
     @table_list = 'stx_cpf_Company_CompanyGroup',
     @return_code = @result OUTPUT;
 
 IF @result <> 0
-    PRINT '❌ Some tables failed';
+    PRINT 'Some tables failed';
 
 
