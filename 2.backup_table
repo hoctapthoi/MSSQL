@@ -45,7 +45,7 @@ GO
 USE master;
 GO
 
-CREATE OR ALTER PROCEDURE dbo.usp_CloneTable
+CREATE OR ALTER PROCEDURE dbo.backup_table
     @db_name NVARCHAR(128),
     @table_list NVARCHAR(MAX),
     @return_code INT = NULL OUTPUT,
