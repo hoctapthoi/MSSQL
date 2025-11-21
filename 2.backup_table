@@ -42,12 +42,18 @@ CREATE NONCLUSTERED INDEX IX_bk_tbl_result_source
 GO
 
 ########### 2. backup table procedure ############
-USE master;
+USE [master]
 GO
 
-CREATE OR ALTER PROCEDURE dbo.backup_table
-    @db_name NVARCHAR(128),
-    @table_list NVARCHAR(MAX),
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE OR ALTER PROCEDURE [dbo].[backup_table]
+    @dbname NVARCHAR(128),
+    @list NVARCHAR(MAX),
     @return_code INT = NULL OUTPUT,
     @job_name NVARCHAR(128) = NULL,
     @copy_data BIT = 1
@@ -55,12 +61,15 @@ AS
 BEGIN
     SET NOCOUNT ON;
     
+    -- =============================================
+    -- Khai báo tất cả biến ở đầu procedure
+    -- =============================================
     DECLARE @sql NVARCHAR(MAX);
     DECLARE @table_name NVARCHAR(128);
     DECLARE @schema_name NVARCHAR(128);
     DECLARE @full_table_name NVARCHAR(270);
     DECLARE @new_name NVARCHAR(128);
-    DECLARE @timestamp VARCHAR(13) = FORMAT(GETDATE(), 'yyyyMMdd_HHmm');
+    DECLARE @timestamp VARCHAR(15) = FORMAT(GETDATE(), 'yyyyMMdd_HHmmss');
     DECLARE @error_msg NVARCHAR(MAX);
     DECLARE @start_time DATETIME2;
     DECLARE @end_time DATETIME2;
@@ -70,7 +79,31 @@ BEGIN
     DECLARE @success_count INT = 0;
     DECLARE @failed_count INT = 0;
     
+    DECLARE @current_pos INT;
+    DECLARE @comma_pos INT;
+    DECLARE @temp_table NVARCHAR(270);
+    DECLARE @dot_pos INT;
+    DECLARE @clean_name NVARCHAR(128);
+    DECLARE @bk_pos INT;
+    
+    -- Variables cho SQL động (đã sanitize)
+    DECLARE @safe_dbname NVARCHAR(256);
+    DECLARE @safe_schema NVARCHAR(256);
+    DECLARE @safe_table NVARCHAR(256);
+    DECLARE @safe_backup NVARCHAR(256);
+    DECLARE @source_full NVARCHAR(520);
+    DECLARE @backup_full NVARCHAR(520);
+    
+    DECLARE @rows_copied BIGINT;
+    DECLARE @row_count_table TABLE (row_count BIGINT);
+    
     SET @return_code = 0;
+    
+    -- =============================================
+    -- Cleanup temp table nếu tồn tại từ lần chạy trước
+    -- =============================================
+    IF OBJECT_ID('tempdb..#Results') IS NOT NULL
+        DROP TABLE #Results;
     
     CREATE TABLE #Results (
         table_name NVARCHAR(270),
@@ -82,34 +115,62 @@ BEGIN
     );
     
     BEGIN TRY
-        IF NOT EXISTS (SELECT 1 FROM sys.databases WHERE name = @db_name)
+        -- =============================================
+        -- VALIDATION INPUT
+        -- =============================================
+        
+        -- Validate @dbname
+        IF @dbname IS NULL OR LTRIM(RTRIM(@dbname)) = ''
         BEGIN
-            SET @error_msg = 'Database [' + @db_name + '] does not exist';
+            SET @error_msg = 'Database name cannot be NULL or empty';
+            RAISERROR(@error_msg, 16, 1);
+        END
+        
+        -- Validate @list
+        IF @list IS NULL OR LTRIM(RTRIM(REPLACE(REPLACE(@list, ',', ''), ' ', ''))) = ''
+        BEGIN
+            SET @error_msg = 'Table list cannot be NULL or empty';
+            RAISERROR(@error_msg, 16, 1);
+        END
+        
+        -- Validate database name không chứa ký tự nguy hiểm
+        -- QUOTENAME sẽ return NULL nếu kết quả > 128 chars
+        SET @safe_dbname = QUOTENAME(@dbname);
+        IF @safe_dbname IS NULL
+        BEGIN
+            SET @error_msg = 'Invalid database name: ' + LEFT(@dbname, 50);
+            RAISERROR(@error_msg, 16, 1);
+        END
+        
+        -- Check database exists
+        IF NOT EXISTS (SELECT 1 FROM sys.databases WHERE name = @dbname)
+        BEGIN
+            SET @error_msg = 'Database ' + @safe_dbname + ' does not exist';
             RAISERROR(@error_msg, 16, 1);
         END
         
         PRINT '========================================';
         PRINT 'CLONE TABLE BACKUP';
         PRINT '========================================';
-        PRINT 'Database: ' + @db_name;
+        PRINT 'Database: ' + @safe_dbname;
         PRINT 'Timestamp: ' + @timestamp;
         PRINT 'Copy Data: ' + CASE WHEN @copy_data = 1 THEN 'YES' ELSE 'NO (Structure only)' END;
         PRINT '';
         
-        DECLARE @current_pos INT = 1;
-        DECLARE @comma_pos INT;
-        DECLARE @temp_table NVARCHAR(270);
+        -- =============================================
+        -- PARSE TABLE LIST
+        -- =============================================
+        SET @current_pos = 1;
+        SET @list = LTRIM(RTRIM(@list)) + ',';
         
-        SET @table_list = LTRIM(RTRIM(@table_list)) + ',';
-        
-        WHILE @current_pos <= LEN(@table_list)
+        WHILE @current_pos <= LEN(@list)
         BEGIN
-            SET @comma_pos = CHARINDEX(',', @table_list, @current_pos);
+            SET @comma_pos = CHARINDEX(',', @list, @current_pos);
             
             IF @comma_pos = 0
                 BREAK;
             
-            SET @temp_table = LTRIM(RTRIM(SUBSTRING(@table_list, @current_pos, @comma_pos - @current_pos)));
+            SET @temp_table = LTRIM(RTRIM(SUBSTRING(@list, @current_pos, @comma_pos - @current_pos)));
             
             IF LEN(@temp_table) > 0
             BEGIN
@@ -121,11 +182,12 @@ BEGIN
                 PRINT '----------------------------------------';
                 
                 BEGIN TRY
-                    -- Parse schema.table
-                    DECLARE @dot_pos INT;
+                    -- =============================================
+                    -- PARSE SCHEMA.TABLE
+                    -- =============================================
                     
-                    SET @temp_table = REPLACE(@temp_table, '[', '');
-                    SET @temp_table = REPLACE(@temp_table, ']', '');
+                    -- Loại bỏ brackets để parse
+                    SET @temp_table = REPLACE(REPLACE(@temp_table, '[', ''), ']', '');
                     
                     SET @dot_pos = CHARINDEX('.', @temp_table);
                     
@@ -140,46 +202,70 @@ BEGIN
                         SET @table_name = @temp_table;
                     END
                     
+                    -- Validate và sanitize schema name
+                    SET @safe_schema = QUOTENAME(@schema_name);
+                    IF @safe_schema IS NULL
+                    BEGIN
+                        RAISERROR('Invalid schema name', 16, 1);
+                    END
+                    
+                    -- Validate và sanitize table name
+                    SET @safe_table = QUOTENAME(@table_name);
+                    IF @safe_table IS NULL
+                    BEGIN
+                        RAISERROR('Invalid table name', 16, 1);
+                    END
+                    
                     SET @full_table_name = @schema_name + '.' + @table_name;
                     
                     PRINT '  Input: [' + @temp_table + ']';
-                    PRINT '  Parsed: [' + @schema_name + '].[' + @table_name + ']';
+                    PRINT '  Parsed: ' + @safe_schema + '.' + @safe_table;
                     
-                    -- Create backup name
-                    DECLARE @clean_name NVARCHAR(128) = @table_name;
+                    -- =============================================
+                    -- CREATE BACKUP NAME
+                    -- =============================================
+                    SET @clean_name = @table_name;
                     
+                    -- Loại bỏ prefix Z_ nếu có
                     IF LEFT(@clean_name, 2) = 'Z_'
                         SET @clean_name = SUBSTRING(@clean_name, 3, LEN(@clean_name));
                     
-                    DECLARE @bk_pos INT = CHARINDEX('_BK', @clean_name);
+                    -- Loại bỏ suffix _BK... nếu có
+                    SET @bk_pos = CHARINDEX('_BK', @clean_name);
                     IF @bk_pos > 0
                         SET @clean_name = LEFT(@clean_name, @bk_pos - 1);
                     
                     SET @new_name = 'Z_' + @clean_name + '_BK' + @timestamp;
                     
-                    PRINT '  Backup: [' + @schema_name + '].[' + @new_name + ']';
+                    -- Validate backup name
+                    SET @safe_backup = QUOTENAME(@new_name);
+                    IF @safe_backup IS NULL
+                    BEGIN
+                        RAISERROR('Generated backup name is invalid', 16, 1);
+                    END
                     
-                    -- ===========================================
-                    -- SUPER SIMPLE - CHỈ BUILD SQL STRING
-                    -- ===========================================
-                    DECLARE @source_full NVARCHAR(300) = QUOTENAME(@schema_name) + '.' + QUOTENAME(@table_name);
-                    DECLARE @backup_full NVARCHAR(300) = QUOTENAME(@schema_name) + '.' + QUOTENAME(@new_name);
+                    PRINT '  Backup: ' + @safe_schema + '.' + @safe_backup;
                     
-                    -- Build SQL - NO PARAMETERS, NO NESTED
-                    SET @sql = N'USE [' + @db_name + N'];' + CHAR(13) + CHAR(10);
+                    -- =============================================
+                    -- BUILD SAFE SQL - Sử dụng QUOTENAME cho tất cả identifiers
+                    -- =============================================
+                    SET @source_full = @safe_schema + '.' + @safe_table;
+                    SET @backup_full = @safe_schema + '.' + @safe_backup;
                     
-                    -- Check table exists
-                    SET @sql = @sql + N'IF OBJECT_ID(N''' + @source_full + N''', ''U'') IS NULL' + CHAR(13) + CHAR(10);
-                    SET @sql = @sql + N'    RAISERROR(''Source table not found'', 16, 1);' + CHAR(13) + CHAR(10);
+                    SET @sql = N'USE ' + @safe_dbname + N';' + CHAR(13) + CHAR(10);
                     
-                    -- Drop existing backup
-                    SET @sql = @sql + N'IF OBJECT_ID(N''' + @backup_full + N''', ''U'') IS NOT NULL' + CHAR(13) + CHAR(10);
-                    SET @sql = @sql + N'    DROP TABLE ' + @backup_full + ';' + CHAR(13) + CHAR(10);
+                    -- Check source table exists
+                    SET @sql = @sql + N'IF OBJECT_ID(N''' + REPLACE(@source_full, '''', '''''') + N''', ''U'') IS NULL' + CHAR(13) + CHAR(10);
+                    SET @sql = @sql + N'    RAISERROR(''Source table not found: ' + REPLACE(@source_full, '''', '''''') + N''', 16, 1);' + CHAR(13) + CHAR(10);
                     
-                    -- Clone table
+                    -- Drop existing backup if exists
+                    SET @sql = @sql + N'IF OBJECT_ID(N''' + REPLACE(@backup_full, '''', '''''') + N''', ''U'') IS NOT NULL' + CHAR(13) + CHAR(10);
+                    SET @sql = @sql + N'    DROP TABLE ' + @backup_full + N';' + CHAR(13) + CHAR(10);
+                    
+                    -- Clone table với hoặc không có data
                     IF @copy_data = 1
                     BEGIN
-                        SET @sql = @sql + N'SELECT * INTO ' + @backup_full + N' FROM ' + @source_full + ' WITH (NOLOCK);' + CHAR(13) + CHAR(10);
+                        SET @sql = @sql + N'SELECT * INTO ' + @backup_full + N' FROM ' + @source_full + N' WITH (NOLOCK);' + CHAR(13) + CHAR(10);
                     END
                     ELSE
                     BEGIN
@@ -187,31 +273,37 @@ BEGIN
                     END
                     
                     -- Return row count
-                    SET @sql = @sql + N'SELECT COUNT_BIG(*) AS row_count FROM ' + @backup_full + ';';
+                    SET @sql = @sql + N'SELECT COUNT_BIG(*) AS row_count FROM ' + @backup_full + N';';
                     
-                    -- Execute
-                    DECLARE @row_count_table TABLE (row_count BIGINT);
+                    -- =============================================
+                    -- EXECUTE
+                    -- =============================================
+                    DELETE FROM @row_count_table;
                     
                     INSERT INTO @row_count_table
                     EXEC sp_executesql @sql;
                     
-                    DECLARE @rows_copied BIGINT;
                     SELECT @rows_copied = row_count FROM @row_count_table;
                     
                     SET @end_time = GETDATE();
                     SET @execution_ms = DATEDIFF(MILLISECOND, @start_time, @end_time);
                     
-                    -- Log success
-                    INSERT INTO DB_monitor.dbo.bk_tbl_result (
-                        database_name, source_table_name, backup_table_name, status, 
-                        error_message, rows_copied, table_size_mb, created_date, 
-                        created_by, execution_time_ms, job_name, server_name
-                    )
-                    VALUES (
-                        @db_name, @full_table_name, @schema_name + '.' + @new_name, 'SUCCESS',
-                        NULL, @rows_copied, NULL, @start_time,
-                        SUSER_SNAME(), @execution_ms, @job_name, @@SERVERNAME
-                    );
+                    -- =============================================
+                    -- LOG SUCCESS
+                    -- =============================================
+                    IF OBJECT_ID('DB_monitor.dbo.bk_tbl_result', 'U') IS NOT NULL
+                    BEGIN
+                        INSERT INTO DB_monitor.dbo.bk_tbl_result (
+                            database_name, source_table_name, backup_table_name, status, 
+                            error_message, rows_copied, table_size_mb, created_date, 
+                            created_by, execution_time_ms, job_name, server_name
+                        )
+                        VALUES (
+                            @dbname, @full_table_name, @schema_name + '.' + @new_name, 'SUCCESS',
+                            NULL, @rows_copied, NULL, @start_time,
+                            SUSER_SNAME(), @execution_ms, @job_name, @@SERVERNAME
+                        );
+                    END
                     
                     INSERT INTO #Results (table_name, backup_name, status, rows_copied, error_msg, execution_ms)
                     VALUES (@full_table_name, @schema_name + '.' + @new_name, 'SUCCESS', @rows_copied, NULL, @execution_ms);
@@ -219,24 +311,25 @@ BEGIN
                     PRINT '  SUCCESS - ' + CAST(@rows_copied AS VARCHAR(20)) + ' rows (' + CAST(@execution_ms AS VARCHAR(10)) + ' ms)';
                     SET @success_count = @success_count + 1;
                     
-                    DELETE FROM @row_count_table;
-                    
                 END TRY
                 BEGIN CATCH
                     SET @end_time = GETDATE();
                     SET @execution_ms = DATEDIFF(MILLISECOND, @start_time, @end_time);
                     SET @error_msg = ERROR_MESSAGE();
                     
-                    INSERT INTO DB_monitor.dbo.bk_tbl_result (
-                        database_name, source_table_name, backup_table_name, status,
-                        error_message, rows_copied, table_size_mb, created_date,
-                        created_by, execution_time_ms, job_name, server_name
-                    )
-                    VALUES (
-                        @db_name, ISNULL(@full_table_name, @temp_table), NULL, 'FAILED',
-                        @error_msg, NULL, NULL, @start_time,
-                        SUSER_SNAME(), @execution_ms, @job_name, @@SERVERNAME
-                    );
+                    IF OBJECT_ID('DB_monitor.dbo.bk_tbl_result', 'U') IS NOT NULL
+                    BEGIN
+                        INSERT INTO DB_monitor.dbo.bk_tbl_result (
+                            database_name, source_table_name, backup_table_name, status,
+                            error_message, rows_copied, table_size_mb, created_date,
+                            created_by, execution_time_ms, job_name, server_name
+                        )
+                        VALUES (
+                            @dbname, ISNULL(@full_table_name, @temp_table), NULL, 'FAILED',
+                            @error_msg, NULL, NULL, @start_time,
+                            SUSER_SNAME(), @execution_ms, @job_name, @@SERVERNAME
+                        );
+                    END
                     
                     INSERT INTO #Results (table_name, backup_name, status, rows_copied, error_msg, execution_ms)
                     VALUES (ISNULL(@full_table_name, @temp_table), NULL, 'FAILED', NULL, @error_msg, @execution_ms);
@@ -252,6 +345,9 @@ BEGIN
             SET @current_pos = @comma_pos + 1;
         END
         
+        -- =============================================
+        -- SUMMARY
+        -- =============================================
         PRINT '========================================';
         PRINT 'SUMMARY';
         PRINT '========================================';
@@ -283,29 +379,9 @@ BEGIN
         PRINT '========================================';
     END CATCH
     
-    DROP TABLE #Results;
+    IF OBJECT_ID('tempdb..#Results') IS NOT NULL
+        DROP TABLE #Results;
     
     RETURN @return_code;
 END
 GO
-
-############ 3. clone table ############
-## Cách 1: Đơn giản (không cần biến)
-# sql-- Gọi trực tiếp - KHÔNG CẦN @result
-EXEC master.dbo.backup_table
-    @db_name = 'FIIN_AddMore4',
-    @table_list = 'stx_cpf_Company_CompanyGroup,dbo.stx_cpf_CompanyOverview';
-
-## Cách 2: Với return code (khi cần check)
-# sql-- Vẫn có thể check return code nếu cần
-DECLARE @result INT;
-
-EXEC master.dbo.backup_table
-    @db_name = 'FIIN_AddMore4',
-    @table_list = 'stx_cpf_Company_CompanyGroup',
-    @return_code = @result OUTPUT;
-
-IF @result <> 0
-    PRINT 'Some tables failed';
-
-
