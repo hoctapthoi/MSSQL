@@ -179,7 +179,7 @@ BEGIN
                     -- Clone table
                     IF @copy_data = 1
                     BEGIN
-                        SET @sql = @sql + N'SELECT * INTO ' + @backup_full + N' FROM ' + @source_full + ';' + CHAR(13) + CHAR(10);
+                        SET @sql = @sql + N'SELECT * INTO ' + @backup_full + N' FROM ' + @source_full + ' WITH (NOLOCK);' + CHAR(13) + CHAR(10);
                     END
                     ELSE
                     BEGIN
