@@ -1,0 +1,42 @@
+-- BƯỚC 1: Export sang CSV
+-- Dùng SSMS: Right-click table → Tasks → Export Data
+-- Hoặc dùng BCP với format file
+
+bcp "SELECT * FROM MDB.dbo.RatioTTM_Daily" queryout "D:\temp\RatioTTM_Daily.csv" -T -c -t"," -r"\n" -S localhost
+    -T : sử dụng windows authen với user đang chạy cmd. nếu sử dụng sql authen: -U username -P password
+    -c : export data dạng text/character thay vì binary
+    -t"," -r"\n" : quy chuẩn file csv
+
+-- BƯỚC 2: Import vào target database
+USE MDB
+GO
+
+-- Tắt constraints tạm thời
+ALTER TABLE RatioTTM_Daily NOCHECK CONSTRAINT ALL
+GO
+
+-- Enable identity insert
+SET IDENTITY_INSERT RatioTTM_Daily ON
+GO
+
+-- BULK INSERT (nhanh hơn nhiều so với INSERT)
+BULK INSERT RatioTTM_Daily
+FROM 'D:\temp\RatioTTM_Daily.csv'
+WITH (
+    DATAFILETYPE = 'char',
+    FIELDTERMINATOR = ',',
+    ROWTERMINATOR = '\n',
+    FIRSTROW = 2,          -- Bỏ qua header
+    BATCHSIZE = 50000,     -- Commit mỗi 50k rows
+    TABLOCK,               -- Table lock để minimal logging
+    KEEPIDENTITY,          -- Giữ nguyên identity values
+    MAXERRORS = 0          -- Dừng ngay khi có lỗi
+)
+GO
+
+SET IDENTITY_INSERT RatioTTM_Daily OFF
+GO
+
+-- Bật lại constraints
+ALTER TABLE RatioTTM_Daily WITH CHECK CHECK CONSTRAINT ALL
+GO
