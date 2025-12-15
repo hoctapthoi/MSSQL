@@ -36,58 +36,350 @@ foreach ($table in $tables) {
 
 Write-Host "`nExport completed!" -ForegroundColor Green
 
+
+
 # ============================================
-# IMPORT MULTIPLE TABLES
+# IMPORT MULTIPLE CSV FILES
+# Fixed Verification Query
 # ============================================
 
-$server = "localhost"
-$database = "MarketDB"
-$inputFolder = "D:\backup\$database"
-$batchSize = 50000
+param(
+    [string]$Server = "localhost",
+    [string]$Database = "MarketDB",
+    [string]$InputFolder = "D:\backup\$Database",
+    [int]$BatchSize = 50000
+)
 
-# Lấy danh sách file .dat
-$dataFiles = Get-ChildItem -Path $inputFolder -Filter "*.dat"
+# Track results
+$results = @()
+$startTime = Get-Date
 
-foreach ($file in $dataFiles) {
-    $tableName = [System.IO.Path]::GetFileNameWithoutExtension($file.Name)
-    $logFile = "$inputFolder\import_$tableName.log"
-    
-    Write-Host "Importing $tableName..." -ForegroundColor Green
-    
-    # Prepare table (disable constraints, indexes)
-    $prepareSQL = @"
-USE $database
-GO
-ALTER TABLE $tableName NOCHECK CONSTRAINT ALL
-ALTER INDEX ALL ON $tableName DISABLE
-TRUNCATE TABLE $tableName
-GO
-"@
-    
-    Invoke-Sqlcmd -ServerInstance $server -Query $prepareSQL -Verbose
-    
-    # Import data
-    $cmd = "bcp `"$database.dbo.$tableName`" in `"$($file.FullName)`" -S $server -T -n -E -b $batchSize -h `"TABLOCK`" -o `"$logFile`""
-    
-    Invoke-Expression $cmd
-    
-    # Rebuild indexes and enable constraints
-    $cleanupSQL = @"
-USE $database
-GO
-ALTER INDEX ALL ON $tableName REBUILD
-ALTER TABLE $tableName WITH CHECK CHECK CONSTRAINT ALL
-UPDATE STATISTICS $tableName WITH FULLSCAN
-GO
-"@
-    
-    Invoke-Sqlcmd -ServerInstance $server -Query $cleanupSQL -Verbose
-    
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host "  ✓ Success" -ForegroundColor Cyan
-    } else {
-        Write-Host "  ✗ Failed - Check log: $logFile" -ForegroundColor Red
-    }
+Write-Host "`n========================================" -ForegroundColor Cyan
+Write-Host "BULK CSV IMPORT UTILITY" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "Server: $Server" -ForegroundColor White
+Write-Host "Database: $Database" -ForegroundColor White
+Write-Host "Input Folder: $InputFolder" -ForegroundColor White
+Write-Host "Batch Size: $BatchSize" -ForegroundColor White
+
+# Get CSV files
+$csvFiles = Get-ChildItem -Path $InputFolder -Filter "*.csv" -ErrorAction Stop
+
+if ($csvFiles.Count -eq 0) {
+    Write-Host "`nNo CSV files found in $InputFolder" -ForegroundColor Red
+    exit
 }
 
-Write-Host "`nImport completed!" -ForegroundColor Green
+Write-Host "`nFound $($csvFiles.Count) CSV file(s) to import`n" -ForegroundColor Yellow
+
+# Process each table
+$tableNumber = 0
+foreach ($file in $csvFiles) {
+    $tableNumber++
+    $tableName = [System.IO.Path]::GetFileNameWithoutExtension($file.Name)
+    $logFile = "$InputFolder\import_$tableName.log"
+    $tableStartTime = Get-Date
+    
+    Write-Host "[$tableNumber/$($csvFiles.Count)] Processing: $tableName" -ForegroundColor Cyan
+    Write-Host "=" * 60 -ForegroundColor Gray
+    
+    $result = [PSCustomObject]@{
+        TableName = $tableName
+        FilePath = $file.FullName
+        FileSize = [math]::Round($file.Length / 1MB, 2)
+        RowsImported = 0
+        NonClusteredIndexes = 0
+        Duration = 0
+        Status = "Pending"
+        ErrorMessage = ""
+    }
+    
+    try {
+        # ============================================
+        # STEP 1: PREPARE TABLE
+        # ============================================
+        Write-Host "  [1/3] Preparing table..." -ForegroundColor Yellow
+        
+        $prepareSQL = @"
+USE [$Database]
+
+-- Count non-clustered indexes before disabling
+DECLARE @indexCount INT = 0
+
+SELECT @indexCount = COUNT(*)
+FROM sys.indexes i
+INNER JOIN sys.objects o ON i.object_id = o.object_id
+WHERE o.name = '$tableName'
+  AND i.type = 2
+  AND i.is_disabled = 0
+
+-- Store count for output
+SELECT @indexCount AS IndexCount
+
+-- Disable constraints
+ALTER TABLE [$tableName] NOCHECK CONSTRAINT ALL
+
+-- Disable non-clustered indexes
+DECLARE @sql NVARCHAR(MAX) = ''
+
+SELECT @sql = @sql + 'ALTER INDEX [' + i.name + '] ON [dbo].[' + o.name + '] DISABLE;'
+FROM sys.indexes i
+INNER JOIN sys.objects o ON i.object_id = o.object_id
+WHERE o.name = '$tableName'
+  AND i.type = 2
+  AND i.is_disabled = 0
+
+IF @sql <> '' EXEC sp_executesql @sql
+
+-- Truncate table
+TRUNCATE TABLE [$tableName]
+"@
+        
+        $prepareResult = Invoke-Sqlcmd -ServerInstance $Server -Query $prepareSQL -ErrorAction Stop
+        $result.NonClusteredIndexes = $prepareResult.IndexCount
+        
+        Write-Host "        ✓ Disabled $($result.NonClusteredIndexes) non-clustered index(es)" -ForegroundColor Green
+        
+        # ============================================
+        # STEP 2: IMPORT DATA
+        # ============================================
+        Write-Host "  [2/3] Importing data..." -ForegroundColor Yellow
+        
+        $bcpCmd = "bcp `"$Database.dbo.$tableName`" in `"$($file.FullName)`" -S $Server -T -w -t`",`" -r`"\n`" -E -b $BatchSize -h `"TABLOCK`" -o `"$logFile`""
+        
+        $importStart = Get-Date
+        Invoke-Expression $bcpCmd | Out-Null
+        $importDuration = ((Get-Date) - $importStart).TotalSeconds
+        
+        if ($LASTEXITCODE -ne 0) {
+            throw "BCP import failed. Check log: $logFile"
+        }
+        
+        # Get row count
+        $rowCountQuery = "SELECT COUNT_BIG(*) AS cnt FROM [$Database].dbo.[$tableName]"
+        $result.RowsImported = (Invoke-Sqlcmd -ServerInstance $Server -Query $rowCountQuery -ErrorAction Stop).cnt
+        
+        Write-Host "        ✓ Imported $($result.RowsImported) rows in $([math]::Round($importDuration, 2))s" -ForegroundColor Green
+        
+        # ============================================
+        # STEP 3: REBUILD INDEXES & ENABLE CONSTRAINTS
+        # ============================================
+        Write-Host "  [3/3] Rebuilding indexes..." -ForegroundColor Yellow
+        
+        $rebuildSQL = @"
+USE [$Database]
+
+-- Rebuild non-clustered indexes
+DECLARE @sql NVARCHAR(MAX) = ''
+DECLARE @count INT = 0
+
+SELECT @sql = @sql + 'ALTER INDEX [' + i.name + '] ON [dbo].[' + o.name + '] REBUILD WITH (ONLINE = OFF, SORT_IN_TEMPDB = ON);',
+       @count = @count + 1
+FROM sys.indexes i
+INNER JOIN sys.objects o ON i.object_id = o.object_id
+WHERE o.name = '$tableName'
+  AND i.type = 2
+  AND i.is_disabled = 1
+
+IF @sql <> ''
+BEGIN
+    EXEC sp_executesql @sql
+END
+
+-- Enable constraints
+ALTER TABLE [$tableName] WITH CHECK CHECK CONSTRAINT ALL
+
+-- Update statistics
+UPDATE STATISTICS [$tableName] WITH FULLSCAN
+"@
+        
+        $rebuildStart = Get-Date
+        Invoke-Sqlcmd -ServerInstance $Server -Query $rebuildSQL -QueryTimeout 0 -ErrorAction Stop
+        $rebuildDuration = ((Get-Date) - $rebuildStart).TotalSeconds
+        
+        Write-Host "        ✓ Rebuilt indexes in $([math]::Round($rebuildDuration, 2))s" -ForegroundColor Green
+        
+        # Calculate total duration
+        $result.Duration = ((Get-Date) - $tableStartTime).TotalSeconds
+        $result.Status = "Success"
+        
+        Write-Host "  ✓ Completed in $([math]::Round($result.Duration, 2))s`n" -ForegroundColor Green
+        
+    }
+    catch {
+        $result.Status = "Failed"
+        $result.ErrorMessage = $_.Exception.Message
+        $result.Duration = ((Get-Date) - $tableStartTime).TotalSeconds
+        
+        Write-Host "  ✗ Failed: $($_.Exception.Message)`n" -ForegroundColor Red
+    }
+    
+    $results += $result
+}
+
+# ============================================
+# FINAL VERIFICATION
+# ============================================
+
+Write-Host "`n========================================" -ForegroundColor Cyan
+Write-Host "VERIFICATION - ALL TABLES" -ForegroundColor Cyan
+Write-Host "========================================`n" -ForegroundColor Cyan
+
+try {
+    Write-Host "Checking table health..." -ForegroundColor Yellow
+    
+    # Query đơn giản hơn - verify từng bảng
+    foreach ($result in $results | Where-Object { $_.Status -eq "Success" }) {
+        $tableName = $result.TableName
+        
+        # Query 1: Row count và size
+        $statsQuery = @"
+USE [$Database]
+
+SELECT 
+    SUM(p.[rows]) AS TotalRows,
+    SUM(a.total_pages) * 8 / 1024.0 AS SizeMB
+FROM sys.tables t
+INNER JOIN sys.partitions p ON t.object_id = p.object_id
+INNER JOIN sys.allocation_units a ON p.partition_id = a.container_id
+WHERE t.name = '$tableName'
+  AND p.index_id IN (0, 1)
+GROUP BY t.name
+"@
+        
+        $stats = Invoke-Sqlcmd -ServerInstance $Server -Query $statsQuery -ErrorAction Stop
+        
+        # Query 2: Index health
+        $indexHealthQuery = @"
+USE [$Database]
+
+SELECT 
+    SUM(CASE WHEN i.type = 1 THEN 1 ELSE 0 END) AS ClusteredCount,
+    SUM(CASE WHEN i.type = 2 THEN 1 ELSE 0 END) AS NonClusteredCount,
+    SUM(CASE WHEN i.type = 2 AND i.is_disabled = 1 THEN 1 ELSE 0 END) AS DisabledNonClusteredCount
+FROM sys.indexes i
+INNER JOIN sys.objects o ON i.object_id = o.object_id
+WHERE o.name = '$tableName'
+  AND i.type > 0
+"@
+        
+        $indexHealth = Invoke-Sqlcmd -ServerInstance $Server -Query $indexHealthQuery -ErrorAction Stop
+        
+        # Query 3: Constraint health
+        $constraintHealthQuery = @"
+USE [$Database]
+
+SELECT 
+    (SELECT COUNT(*) FROM sys.check_constraints WHERE parent_object_id = OBJECT_ID('dbo.$tableName') AND is_disabled = 1) AS DisabledCheckConstraints,
+    (SELECT COUNT(*) FROM sys.foreign_keys WHERE parent_object_id = OBJECT_ID('dbo.$tableName') AND is_disabled = 1) AS DisabledForeignKeys
+"@
+        
+        $constraintHealth = Invoke-Sqlcmd -ServerInstance $Server -Query $constraintHealthQuery -ErrorAction Stop
+        
+        # Determine health status
+        $hasIssues = $indexHealth.DisabledNonClusteredCount -gt 0 -or 
+                     $constraintHealth.DisabledCheckConstraints -gt 0 -or 
+                     $constraintHealth.DisabledForeignKeys -gt 0
+        
+        $icon = if ($hasIssues) { "⚠" } else { "✓" }
+        $color = if ($hasIssues) { "Yellow" } else { "Green" }
+        
+        Write-Host "  $icon $tableName" -ForegroundColor $color
+        Write-Host "      Rows: $($stats.TotalRows.ToString('N0'))" -ForegroundColor White
+        Write-Host "      Size: $([math]::Round($stats.SizeMB, 2)) MB" -ForegroundColor White
+        Write-Host "      Non-Clustered Indexes: $($indexHealth.NonClusteredCount)" -ForegroundColor White
+        
+        if ($indexHealth.DisabledNonClusteredCount -gt 0) {
+            Write-Host "      ✗ Disabled Indexes: $($indexHealth.DisabledNonClusteredCount)" -ForegroundColor Red
+        }
+        if ($constraintHealth.DisabledCheckConstraints -gt 0) {
+            Write-Host "      ✗ Disabled Check Constraints: $($constraintHealth.DisabledCheckConstraints)" -ForegroundColor Red
+        }
+        if ($constraintHealth.DisabledForeignKeys -gt 0) {
+            Write-Host "      ✗ Disabled Foreign Keys: $($constraintHealth.DisabledForeignKeys)" -ForegroundColor Red
+        }
+        
+        Write-Host ""
+    }
+}
+catch {
+    Write-Host "Verification failed: $($_.Exception.Message)" -ForegroundColor Red
+}
+
+# ============================================
+# SUMMARY STATISTICS
+# ============================================
+
+$totalDuration = ((Get-Date) - $startTime).TotalSeconds
+$successCount = ($results | Where-Object { $_.Status -eq "Success" }).Count
+$failedCount = ($results | Where-Object { $_.Status -eq "Failed" }).Count
+$totalRows = ($results | Where-Object { $_.Status -eq "Success" } | Measure-Object -Property RowsImported -Sum).Sum
+$totalFileSize = ($results | Measure-Object -Property FileSize -Sum).Sum
+
+Write-Host "`n========================================" -ForegroundColor Cyan
+Write-Host "IMPORT SUMMARY" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+
+Write-Host "`nOverall Statistics:" -ForegroundColor Yellow
+Write-Host "  Total Duration: $([math]::Round($totalDuration, 2)) seconds ($([math]::Round($totalDuration/60, 2)) minutes)" -ForegroundColor White
+Write-Host "  Total Files Processed: $($results.Count)" -ForegroundColor White
+Write-Host "  Success: $successCount" -ForegroundColor Green
+Write-Host "  Failed: $failedCount" -ForegroundColor $(if ($failedCount -gt 0) { "Red" } else { "Green" })
+Write-Host "  Total Rows Imported: $($totalRows.ToString('N0'))" -ForegroundColor White
+Write-Host "  Total File Size: $([math]::Round($totalFileSize, 2)) MB" -ForegroundColor White
+
+if ($totalDuration -gt 0 -and $totalRows -gt 0) {
+    Write-Host "  Average Speed: $([math]::Round($totalRows/$totalDuration, 2)) rows/second" -ForegroundColor White
+}
+
+Write-Host "`nDetailed Results:" -ForegroundColor Yellow
+Write-Host ""
+
+# Show results table
+$results | ForEach-Object {
+    $statusColor = if ($_.Status -eq "Success") { "Green" } else { "Red" }
+    $icon = if ($_.Status -eq "Success") { "✓" } else { "✗" }
+    
+    Write-Host "  $icon $($_.TableName)" -ForegroundColor $statusColor
+    Write-Host "      File Size: $($_.FileSize) MB" -ForegroundColor Gray
+    
+    if ($_.Status -eq "Success") {
+        Write-Host "      Rows: $($_.RowsImported.ToString('N0'))" -ForegroundColor Gray
+        Write-Host "      Indexes: $($_.NonClusteredIndexes)" -ForegroundColor Gray
+        Write-Host "      Duration: $([math]::Round($_.Duration, 2))s" -ForegroundColor Gray
+        
+        if ($_.RowsImported -gt 0 -and $_.Duration -gt 0) {
+            $speed = [math]::Round($_.RowsImported / $_.Duration, 2)
+            Write-Host "      Speed: $($speed.ToString('N0')) rows/s" -ForegroundColor Gray
+        }
+    } else {
+        Write-Host "      Error: $($_.ErrorMessage)" -ForegroundColor Red
+        Write-Host "      Duration: $([math]::Round($_.Duration, 2))s" -ForegroundColor Gray
+    }
+    
+    Write-Host ""
+}
+
+# Export detailed report to CSV
+$reportFile = "$InputFolder\import_report_$(Get-Date -Format 'yyyyMMdd_HHmmss').csv"
+$results | Export-Csv -Path $reportFile -NoTypeInformation -Encoding UTF8
+
+Write-Host "Detailed report saved to: $reportFile" -ForegroundColor Cyan
+
+# ============================================
+# COMPLETION
+# ============================================
+
+Write-Host "`n========================================" -ForegroundColor Cyan
+
+if ($failedCount -eq 0) {
+    Write-Host "✓ ALL IMPORTS COMPLETED SUCCESSFULLY!" -ForegroundColor Green
+} elseif ($successCount -eq 0) {
+    Write-Host "✗ ALL IMPORTS FAILED!" -ForegroundColor Red
+} else {
+    Write-Host "⚠ IMPORTS COMPLETED WITH ERRORS" -ForegroundColor Yellow
+    Write-Host "  $successCount succeeded, $failedCount failed" -ForegroundColor Yellow
+}
+
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host ""
