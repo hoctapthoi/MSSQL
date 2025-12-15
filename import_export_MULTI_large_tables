@@ -1,0 +1,93 @@
+# ============================================
+# EXPORT MULTIPLE TABLES
+# ============================================
+
+$server = "localhost"
+$database = "MarketDB"
+$outputFolder = "D:\backup\$database"
+$tables = @(
+    "RatioTTM_Daily",
+    "Income_Statement", 
+    "BalanceSheet",
+    "CashFlow"
+)
+
+# Tạo thư mục nếu chưa có
+New-Item -ItemType Directory -Force -Path $outputFolder | Out-Null
+
+foreach ($table in $tables) {
+    $outputFile = "$outputFolder\$table.dat"
+    $logFile = "$outputFolder\$table.log"
+    
+    Write-Host "Exporting $table..." -ForegroundColor Green
+    
+    # Export với native format (nhanh nhất)
+    $cmd = "bcp `"$database.dbo.$table`" out `"$outputFile`" -S $server -T -n -o `"$logFile`""
+    
+    Invoke-Expression $cmd
+    
+    if ($LASTEXITCODE -eq 0) {
+        $fileSize = (Get-Item $outputFile).Length / 1MB
+        Write-Host "  ✓ Success - Size: $([math]::Round($fileSize, 2)) MB" -ForegroundColor Cyan
+    } else {
+        Write-Host "  ✗ Failed - Check log: $logFile" -ForegroundColor Red
+    }
+}
+
+Write-Host "`nExport completed!" -ForegroundColor Green
+
+# ============================================
+# IMPORT MULTIPLE TABLES
+# ============================================
+
+$server = "localhost"
+$database = "MarketDB"
+$inputFolder = "D:\backup\$database"
+$batchSize = 50000
+
+# Lấy danh sách file .dat
+$dataFiles = Get-ChildItem -Path $inputFolder -Filter "*.dat"
+
+foreach ($file in $dataFiles) {
+    $tableName = [System.IO.Path]::GetFileNameWithoutExtension($file.Name)
+    $logFile = "$inputFolder\import_$tableName.log"
+    
+    Write-Host "Importing $tableName..." -ForegroundColor Green
+    
+    # Prepare table (disable constraints, indexes)
+    $prepareSQL = @"
+USE $database
+GO
+ALTER TABLE $tableName NOCHECK CONSTRAINT ALL
+ALTER INDEX ALL ON $tableName DISABLE
+TRUNCATE TABLE $tableName
+GO
+"@
+    
+    Invoke-Sqlcmd -ServerInstance $server -Query $prepareSQL -Verbose
+    
+    # Import data
+    $cmd = "bcp `"$database.dbo.$tableName`" in `"$($file.FullName)`" -S $server -T -n -E -b $batchSize -h `"TABLOCK`" -o `"$logFile`""
+    
+    Invoke-Expression $cmd
+    
+    # Rebuild indexes and enable constraints
+    $cleanupSQL = @"
+USE $database
+GO
+ALTER INDEX ALL ON $tableName REBUILD
+ALTER TABLE $tableName WITH CHECK CHECK CONSTRAINT ALL
+UPDATE STATISTICS $tableName WITH FULLSCAN
+GO
+"@
+    
+    Invoke-Sqlcmd -ServerInstance $server -Query $cleanupSQL -Verbose
+    
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "  ✓ Success" -ForegroundColor Cyan
+    } else {
+        Write-Host "  ✗ Failed - Check log: $logFile" -ForegroundColor Red
+    }
+}
+
+Write-Host "`nImport completed!" -ForegroundColor Green
