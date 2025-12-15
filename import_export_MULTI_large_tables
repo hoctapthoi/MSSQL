@@ -1,19 +1,26 @@
 # ============================================
-# EXPORT MULTIPLE TABLES
+# EXPORT MULTIPLE TABLES WITH ROW COUNT
 # ============================================
 
 $server = "localhost"
 $database = "MarketDB"
 $outputFolder = "D:\backup\$database"
 $tables = @(
-    "RatioTTM_Daily",
-    "Income_Statement", 
-    "BalanceSheet",
-    "CashFlow"
+    "Organization_Person_Role",
+    "NewsVN"
 )
 
 # Tạo thư mục nếu chưa có
 New-Item -ItemType Directory -Force -Path $outputFolder | Out-Null
+
+Write-Host "`n========================================" -ForegroundColor Cyan
+Write-Host "EXPORTING TABLES FROM $database" -ForegroundColor Cyan
+Write-Host "========================================`n" -ForegroundColor Cyan
+
+$exportResults = @()
+$totalRows = 0
+$totalSize = 0
+$startTime = Get-Date
 
 foreach ($table in $tables) {
     $outputFile = "$outputFolder\$table.dat"
@@ -21,18 +28,100 @@ foreach ($table in $tables) {
     
     Write-Host "Exporting $table..." -ForegroundColor Green
     
-    # Export với native format (nhanh nhất)
-    $cmd = "bcp `"$database.dbo.$table`" out `"$outputFile`" -S $server -T -n -o `"$logFile`""
-    
-    Invoke-Expression $cmd
-    
-    if ($LASTEXITCODE -eq 0) {
-        $fileSize = (Get-Item $outputFile).Length / 1MB
-        Write-Host "  ✓ Success - Size: $([math]::Round($fileSize, 2)) MB" -ForegroundColor Cyan
-    } else {
-        Write-Host "  ✗ Failed - Check log: $logFile" -ForegroundColor Red
+    try {
+        # Đếm số rows trước khi export
+        $rowCountQuery = "SELECT COUNT_BIG(*) AS cnt FROM [$database].dbo.[$table]"
+        $rowCount = (Invoke-Sqlcmd -ServerInstance $server -Query $rowCountQuery -ErrorAction Stop).cnt
+        
+        Write-Host "  Rows: $($rowCount.ToString('N0'))" -ForegroundColor White
+        
+        # Export với native format
+        $exportStart = Get-Date
+        $cmd = "bcp `"$database.dbo.$table`" out `"$outputFile`" -S $server -T -n -o `"$logFile`""
+        
+        Invoke-Expression $cmd | Out-Null
+        
+        $exportDuration = ((Get-Date) - $exportStart).TotalSeconds
+        
+        if ($LASTEXITCODE -eq 0) {
+            $fileSize = (Get-Item $outputFile).Length / 1MB
+            $totalRows += $rowCount
+            $totalSize += $fileSize
+            
+            Write-Host "  ✓ Success" -ForegroundColor Cyan
+            Write-Host "    Size: $([math]::Round($fileSize, 2)) MB" -ForegroundColor Gray
+            Write-Host "    Duration: $([math]::Round($exportDuration, 2))s" -ForegroundColor Gray
+            
+            if ($rowCount -gt 0 -and $exportDuration -gt 0) {
+                $speed = [math]::Round($rowCount / $exportDuration, 0)
+                Write-Host "    Speed: $($speed.ToString('N0')) rows/s" -ForegroundColor Gray
+            }
+            
+            $exportResults += [PSCustomObject]@{
+                Table = $table
+                Rows = $rowCount
+                SizeMB = [math]::Round($fileSize, 2)
+                Duration = [math]::Round($exportDuration, 2)
+                Status = "Success"
+            }
+        } else {
+            Write-Host "  ✗ Failed - Check log: $logFile" -ForegroundColor Red
+            
+            $exportResults += [PSCustomObject]@{
+                Table = $table
+                Rows = $rowCount
+                SizeMB = 0
+                Duration = [math]::Round($exportDuration, 2)
+                Status = "Failed"
+            }
+        }
     }
+    catch {
+        Write-Host "  ✗ Error: $($_.Exception.Message)" -ForegroundColor Red
+        
+        $exportResults += [PSCustomObject]@{
+            Table = $table
+            Rows = 0
+            SizeMB = 0
+            Duration = 0
+            Status = "Error"
+        }
+    }
+    
+    Write-Host ""
 }
+
+# ============================================
+# SUMMARY
+# ============================================
+
+$totalDuration = ((Get-Date) - $startTime).TotalSeconds
+$successCount = ($exportResults | Where-Object { $_.Status -eq "Success" }).Count
+$failedCount = ($exportResults | Where-Object { $_.Status -ne "Success" }).Count
+
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "EXPORT SUMMARY" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+
+Write-Host "`nOverall Statistics:" -ForegroundColor Yellow
+Write-Host "  Total Duration: $([math]::Round($totalDuration, 2))s ($([math]::Round($totalDuration/60, 2)) min)" -ForegroundColor White
+Write-Host "  Tables Processed: $($tables.Count)" -ForegroundColor White
+Write-Host "  Success: $successCount" -ForegroundColor Green
+Write-Host "  Failed: $failedCount" -ForegroundColor $(if ($failedCount -gt 0) { "Red" } else { "Green" })
+Write-Host "  Total Rows: $($totalRows.ToString('N0'))" -ForegroundColor Cyan
+Write-Host "  Total Size: $([math]::Round($totalSize, 2)) MB" -ForegroundColor White
+
+if ($totalRows -gt 0 -and $totalDuration -gt 0) {
+    Write-Host "  Average Speed: $([math]::Round($totalRows/$totalDuration, 0).ToString('N0')) rows/s" -ForegroundColor White
+}
+
+Write-Host "`nDetailed Results:" -ForegroundColor Yellow
+$exportResults | Format-Table -AutoSize
+
+# Export report to CSV
+$reportFile = "$outputFolder\export_report_$(Get-Date -Format 'yyyyMMdd_HHmmss').csv"
+$exportResults | Export-Csv -Path $reportFile -NoTypeInformation -Encoding UTF8
+Write-Host "Report saved to: $reportFile" -ForegroundColor Cyan
 
 Write-Host "`nExport completed!" -ForegroundColor Green
 
