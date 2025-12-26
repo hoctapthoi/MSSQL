@@ -1,16 +1,16 @@
+# ========= use Powershell ISE ===============
 # ============================================
 # EXPORT MULTIPLE TABLES WITH ROW COUNT
 # ============================================
 
 $server = "localhost"
 $database = "MarketDB"
-$outputFolder = "D:\backup\$database"
+$outputFolder = "C:\backup\$database"
 $tables = @(
-    "Organization_Person_Role",
-    "NewsVN"
+    "Income_Statement", "RatioTTM_Daily", "BalanceSheet", "RatioTTM"
 )
 
-# Tạo thư mục nếu chưa có
+# Tao thu muc neu chua co
 New-Item -ItemType Directory -Force -Path $outputFolder | Out-Null
 
 Write-Host "`n========================================" -ForegroundColor Cyan
@@ -23,32 +23,65 @@ $totalSize = 0
 $startTime = Get-Date
 
 foreach ($table in $tables) {
-    $outputFile = "$outputFolder\$table.dat"
+    $outputFile = "$outputFolder\$table.csv"
     $logFile = "$outputFolder\$table.log"
     
     Write-Host "Exporting $table..." -ForegroundColor Green
     
     try {
-        # Đếm số rows trước khi export
+        # Dem so rows truoc khi export
         $rowCountQuery = "SELECT COUNT_BIG(*) AS cnt FROM [$database].dbo.[$table]"
         $rowCount = (Invoke-Sqlcmd -ServerInstance $server -Query $rowCountQuery -ErrorAction Stop).cnt
         
         Write-Host "  Rows: $($rowCount.ToString('N0'))" -ForegroundColor White
         
-        # Export với native format
+        # Export data
         $exportStart = Get-Date
-        $cmd = "bcp `"$database.dbo.$table`" out `"$outputFile`" -S $server -T -n -o `"$logFile`""
         
-        Invoke-Expression $cmd | Out-Null
+        # Lay ten cot (header)
+        $getColumnsQuery = @"
+SELECT STUFF((
+    SELECT ',' + COLUMN_NAME
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = '$table'
+    ORDER BY ORDINAL_POSITION
+    FOR XML PATH(''), TYPE
+).value('.', 'NVARCHAR(MAX)'), 1, 1, '') AS Headers
+"@
         
-        $exportDuration = ((Get-Date) - $exportStart).TotalSeconds
+        $headers = (Invoke-Sqlcmd -ServerInstance $server -Database $database -Query $getColumnsQuery -ErrorAction Stop).Headers
+        
+        # Ghi header vao file
+        Set-Content -Path $outputFile -Value $headers -Encoding UTF8
+        
+        # Export data vao file tam
+        $tempFile = "$outputFolder\$table`_temp.csv"
+        
+        # Su dung & de execute command truc tiep, escape dau phay bang cach dung dau ngoac kep
+        $bcpArgs = @(
+            "$database.dbo.$table",
+            "out",
+            $tempFile,
+            "-S", $server,
+            "-T",
+            "-c",
+            "-t,",
+            "-o", $logFile
+        )
+        
+        & bcp $bcpArgs | Out-Null
         
         if ($LASTEXITCODE -eq 0) {
+            # Append data vao file co header
+            Get-Content $tempFile | Add-Content $outputFile -Encoding UTF8
+            Remove-Item $tempFile -Force
+            
+            $exportDuration = ((Get-Date) - $exportStart).TotalSeconds
             $fileSize = (Get-Item $outputFile).Length / 1MB
             $totalRows += $rowCount
             $totalSize += $fileSize
             
-            Write-Host "  ✓ Success" -ForegroundColor Cyan
+            Write-Host "  Success" -ForegroundColor Cyan
             Write-Host "    Size: $([math]::Round($fileSize, 2)) MB" -ForegroundColor Gray
             Write-Host "    Duration: $([math]::Round($exportDuration, 2))s" -ForegroundColor Gray
             
@@ -65,7 +98,7 @@ foreach ($table in $tables) {
                 Status = "Success"
             }
         } else {
-            Write-Host "  ✗ Failed - Check log: $logFile" -ForegroundColor Red
+            Write-Host "  Failed - Check log: $logFile" -ForegroundColor Red
             
             $exportResults += [PSCustomObject]@{
                 Table = $table
@@ -77,7 +110,7 @@ foreach ($table in $tables) {
         }
     }
     catch {
-        Write-Host "  ✗ Error: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "  Error: $($_.Exception.Message)" -ForegroundColor Red
         
         $exportResults += [PSCustomObject]@{
             Table = $table
@@ -91,10 +124,7 @@ foreach ($table in $tables) {
     Write-Host ""
 }
 
-# ============================================
-# SUMMARY
-# ============================================
-
+# Summary
 $totalDuration = ((Get-Date) - $startTime).TotalSeconds
 $successCount = ($exportResults | Where-Object { $_.Status -eq "Success" }).Count
 $failedCount = ($exportResults | Where-Object { $_.Status -ne "Success" }).Count
@@ -104,7 +134,7 @@ Write-Host "EXPORT SUMMARY" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "`nOverall Statistics:" -ForegroundColor Yellow
-Write-Host "  Total Duration: $([math]::Round($totalDuration, 2))s ($([math]::Round($totalDuration/60, 2)) min)" -ForegroundColor White
+Write-Host ('  Total Duration: {0}s ({1} min)' -f [math]::Round($totalDuration, 2), [math]::Round($totalDuration/60, 2)) -ForegroundColor White
 Write-Host "  Tables Processed: $($tables.Count)" -ForegroundColor White
 Write-Host "  Success: $successCount" -ForegroundColor Green
 Write-Host "  Failed: $failedCount" -ForegroundColor $(if ($failedCount -gt 0) { "Red" } else { "Green" })
@@ -127,15 +157,14 @@ Write-Host "`nExport completed!" -ForegroundColor Green
 
 
 
-# ============================================
-# IMPORT MULTIPLE CSV FILES
-# Fixed Verification Query
-# ============================================
+# ============================================================================================================================================================================================================
+# IMPORT MULTIPLE TABLES WITH ROW COUNT
+# =============================================================================================================================================================================================================
 
 param(
     [string]$Server = "localhost",
     [string]$Database = "MarketDB",
-    [string]$InputFolder = "D:\backup\$Database",
+    [string]$InputFolder = "C:\backup\$Database",
     [int]$BatchSize = 50000
 )
 
@@ -170,7 +199,7 @@ foreach ($file in $csvFiles) {
     $tableStartTime = Get-Date
     
     Write-Host "[$tableNumber/$($csvFiles.Count)] Processing: $tableName" -ForegroundColor Cyan
-    Write-Host "=" * 60 -ForegroundColor Gray
+    Write-Host ("=" * 60) -ForegroundColor Gray
     
     $result = [PSCustomObject]@{
         TableName = $tableName
@@ -185,9 +214,26 @@ foreach ($file in $csvFiles) {
     
     try {
         # ============================================
+        # STEP 0: REMOVE HEADER FROM CSV
+        # ============================================
+        Write-Host "  [0/4] Removing header row..." -ForegroundColor Yellow
+        
+        $tempFile = "$InputFolder\$tableName`_no_header.csv"
+        $csvContent = Get-Content $file.FullName
+        
+        if ($csvContent.Count -gt 1) {
+            # Skip first line (header) and save rest
+            $csvContent | Select-Object -Skip 1 | Set-Content $tempFile -Encoding UTF8
+            Write-Host "        ✓ Created temp file without header" -ForegroundColor Green
+        } else {
+            Write-Host "        ⚠ File is empty or has only header" -ForegroundColor Yellow
+            throw "CSV file is empty"
+        }
+        
+        # ============================================
         # STEP 1: PREPARE TABLE
         # ============================================
-        Write-Host "  [1/3] Preparing table..." -ForegroundColor Yellow
+        Write-Host "  [1/4] Preparing table..." -ForegroundColor Yellow
         
         $prepareSQL = @"
 USE [$Database]
@@ -232,13 +278,28 @@ TRUNCATE TABLE [$tableName]
         # ============================================
         # STEP 2: IMPORT DATA
         # ============================================
-        Write-Host "  [2/3] Importing data..." -ForegroundColor Yellow
+        Write-Host "  [2/4] Importing data..." -ForegroundColor Yellow
         
-        $bcpCmd = "bcp `"$Database.dbo.$tableName`" in `"$($file.FullName)`" -S $Server -T -w -t`",`" -r`"\n`" -E -b $BatchSize -h `"TABLOCK`" -o `"$logFile`""
+        # Use -c (character format) to match export, and temp file without header
+        $bcpArgs = @(
+            "$Database.dbo.$tableName",
+            "in",
+            $tempFile,
+            "-S", $Server,
+            "-T",
+            "-c",              # Character format (match export)
+            "-t,",             # Field delimiter
+            "-b", $BatchSize,
+            "-h", "TABLOCK",
+            "-o", $logFile
+        )
         
         $importStart = Get-Date
-        Invoke-Expression $bcpCmd | Out-Null
+        & bcp $bcpArgs | Out-Null
         $importDuration = ((Get-Date) - $importStart).TotalSeconds
+        
+        # Clean up temp file
+        Remove-Item $tempFile -Force -ErrorAction SilentlyContinue
         
         if ($LASTEXITCODE -ne 0) {
             throw "BCP import failed. Check log: $logFile"
@@ -248,12 +309,12 @@ TRUNCATE TABLE [$tableName]
         $rowCountQuery = "SELECT COUNT_BIG(*) AS cnt FROM [$Database].dbo.[$tableName]"
         $result.RowsImported = (Invoke-Sqlcmd -ServerInstance $Server -Query $rowCountQuery -ErrorAction Stop).cnt
         
-        Write-Host "        ✓ Imported $($result.RowsImported) rows in $([math]::Round($importDuration, 2))s" -ForegroundColor Green
+        Write-Host "        ✓ Imported $($result.RowsImported.ToString('N0')) rows in $([math]::Round($importDuration, 2))s" -ForegroundColor Green
         
         # ============================================
         # STEP 3: REBUILD INDEXES & ENABLE CONSTRAINTS
         # ============================================
-        Write-Host "  [3/3] Rebuilding indexes..." -ForegroundColor Yellow
+        Write-Host "  [3/4] Rebuilding indexes..." -ForegroundColor Yellow
         
         $rebuildSQL = @"
 USE [$Database]
@@ -300,7 +361,13 @@ UPDATE STATISTICS [$tableName] WITH FULLSCAN
         $result.ErrorMessage = $_.Exception.Message
         $result.Duration = ((Get-Date) - $tableStartTime).TotalSeconds
         
-        Write-Host "  ✗ Failed: $($_.Exception.Message)`n" -ForegroundColor Red
+        # Clean up temp file on error
+        if (Test-Path $tempFile) {
+            Remove-Item $tempFile -Force -ErrorAction SilentlyContinue
+        }
+        
+        Write-Host "  ✗ Failed: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "  Check log: $logFile`n" -ForegroundColor Yellow
     }
     
     $results += $result
@@ -317,11 +384,9 @@ Write-Host "========================================`n" -ForegroundColor Cyan
 try {
     Write-Host "Checking table health..." -ForegroundColor Yellow
     
-    # Query đơn giản hơn - verify từng bảng
     foreach ($result in $results | Where-Object { $_.Status -eq "Success" }) {
         $tableName = $result.TableName
         
-        # Query 1: Row count và size
         $statsQuery = @"
 USE [$Database]
 
@@ -338,7 +403,6 @@ GROUP BY t.name
         
         $stats = Invoke-Sqlcmd -ServerInstance $Server -Query $statsQuery -ErrorAction Stop
         
-        # Query 2: Index health
         $indexHealthQuery = @"
 USE [$Database]
 
@@ -354,21 +418,7 @@ WHERE o.name = '$tableName'
         
         $indexHealth = Invoke-Sqlcmd -ServerInstance $Server -Query $indexHealthQuery -ErrorAction Stop
         
-        # Query 3: Constraint health
-        $constraintHealthQuery = @"
-USE [$Database]
-
-SELECT 
-    (SELECT COUNT(*) FROM sys.check_constraints WHERE parent_object_id = OBJECT_ID('dbo.$tableName') AND is_disabled = 1) AS DisabledCheckConstraints,
-    (SELECT COUNT(*) FROM sys.foreign_keys WHERE parent_object_id = OBJECT_ID('dbo.$tableName') AND is_disabled = 1) AS DisabledForeignKeys
-"@
-        
-        $constraintHealth = Invoke-Sqlcmd -ServerInstance $Server -Query $constraintHealthQuery -ErrorAction Stop
-        
-        # Determine health status
-        $hasIssues = $indexHealth.DisabledNonClusteredCount -gt 0 -or 
-                     $constraintHealth.DisabledCheckConstraints -gt 0 -or 
-                     $constraintHealth.DisabledForeignKeys -gt 0
+        $hasIssues = $indexHealth.DisabledNonClusteredCount -gt 0
         
         $icon = if ($hasIssues) { "⚠" } else { "✓" }
         $color = if ($hasIssues) { "Yellow" } else { "Green" }
@@ -380,12 +430,6 @@ SELECT
         
         if ($indexHealth.DisabledNonClusteredCount -gt 0) {
             Write-Host "      ✗ Disabled Indexes: $($indexHealth.DisabledNonClusteredCount)" -ForegroundColor Red
-        }
-        if ($constraintHealth.DisabledCheckConstraints -gt 0) {
-            Write-Host "      ✗ Disabled Check Constraints: $($constraintHealth.DisabledCheckConstraints)" -ForegroundColor Red
-        }
-        if ($constraintHealth.DisabledForeignKeys -gt 0) {
-            Write-Host "      ✗ Disabled Foreign Keys: $($constraintHealth.DisabledForeignKeys)" -ForegroundColor Red
         }
         
         Write-Host ""
@@ -410,7 +454,7 @@ Write-Host "IMPORT SUMMARY" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "`nOverall Statistics:" -ForegroundColor Yellow
-Write-Host "  Total Duration: $([math]::Round($totalDuration, 2)) seconds ($([math]::Round($totalDuration/60, 2)) minutes)" -ForegroundColor White
+Write-Host ('  Total Duration: {0}s ({1} min)' -f [math]::Round($totalDuration, 2), [math]::Round($totalDuration/60, 2)) -ForegroundColor White
 Write-Host "  Total Files Processed: $($results.Count)" -ForegroundColor White
 Write-Host "  Success: $successCount" -ForegroundColor Green
 Write-Host "  Failed: $failedCount" -ForegroundColor $(if ($failedCount -gt 0) { "Red" } else { "Green" })
@@ -418,13 +462,12 @@ Write-Host "  Total Rows Imported: $($totalRows.ToString('N0'))" -ForegroundColo
 Write-Host "  Total File Size: $([math]::Round($totalFileSize, 2)) MB" -ForegroundColor White
 
 if ($totalDuration -gt 0 -and $totalRows -gt 0) {
-    Write-Host "  Average Speed: $([math]::Round($totalRows/$totalDuration, 2)) rows/second" -ForegroundColor White
+    Write-Host "  Average Speed: $([math]::Round($totalRows/$totalDuration, 2).ToString('N0')) rows/second" -ForegroundColor White
 }
 
 Write-Host "`nDetailed Results:" -ForegroundColor Yellow
 Write-Host ""
 
-# Show results table
 $results | ForEach-Object {
     $statusColor = if ($_.Status -eq "Success") { "Green" } else { "Red" }
     $icon = if ($_.Status -eq "Success") { "✓" } else { "✗" }
@@ -472,3 +515,4 @@ if ($failedCount -eq 0) {
 
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
+
