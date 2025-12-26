@@ -4,7 +4,7 @@
 
 bcp "SELECT * FROM MDB.dbo.RatioTTM_Daily" queryout "D:\temp\RatioTTM_Daily.csv" -T -c -t"," -r"\n" -S localhost
     -T : sử dụng windows authen với user đang chạy cmd. nếu sử dụng sql authen: -U username -P password
-    -c : export data dạng text/character thay vì binary
+    -w : export data dạng text Unicode thay vì binary
     -t"," -r"\n" : quy chuẩn file csv
 
 -- BƯỚC 2: Import vào target database
