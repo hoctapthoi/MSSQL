@@ -23,7 +23,7 @@ GO
 BULK INSERT RatioTTM_Daily
 FROM 'D:\temp\RatioTTM_Daily.csv'
 WITH (
-    DATAFILETYPE = 'char',
+    DATAFILETYPE = 'widechar', -- code nguồn sử dụng -w , nên datatype = widechar, nếu code nguồ dùng -c, datatype = char
     FIELDTERMINATOR = ',',
     ROWTERMINATOR = '\n',
     FIRSTROW = 2,          -- Bỏ qua header
