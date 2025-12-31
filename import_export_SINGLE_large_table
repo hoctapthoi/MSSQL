@@ -2,9 +2,9 @@
 -- Dùng SSMS: Right-click table → Tasks → Export Data
 -- Hoặc dùng BCP với format file
 
-bcp "SELECT * FROM MDB.dbo.RatioTTM_Daily" queryout "D:\temp\RatioTTM_Daily.csv" -T -c -t"," -r"\n" -S localhost
+bcp "SELECT * FROM MDB.dbo.RatioTTM_Daily" queryout "D:\temp\RatioTTM_Daily.csv" -T -w -t"," -r"\n" -S localhost
     -T : sử dụng windows authen với user đang chạy cmd. nếu sử dụng sql authen: -U username -P password
-    -w : export data dạng text Unicode thay vì binary
+    -w : export data dạng text Unicode (widechar) thay vì binary (char). Sử dụng -c (char) cho dữ liệu nhỏ hơn, nhưng ko hỗ trợ unicode 
     -t"," -r"\n" : quy chuẩn file csv
 
 -- BƯỚC 2: Import vào target database
