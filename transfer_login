@@ -262,3 +262,25 @@ DEALLOCATE db_cursor
 
 SELECT * FROM #Results
 DROP TABLE #Results;
+
+D. Mapping user 
+-- select 'alter user [' + name + '] with login = [' + name + '];' from sys.server_principals where principal_id > 265
+
+EXEC sp_MSforeachdb '
+USE [?];
+IF DB_ID(''?'') > 4  -- Bỏ qua system databases
+BEGIN
+    DECLARE @sql NVARCHAR(MAX) = '''';
+    SELECT @sql = @sql + ''ALTER USER ['' + name + ''] WITH LOGIN = ['' + name + ''];'' + CHAR(13)
+    FROM sys.database_principals
+    WHERE type IN (''S'', ''U'')  -- SQL user và Windows user
+      AND name NOT IN (''dbo'', ''guest'', ''INFORMATION_SCHEMA'', ''sys'')
+      AND principal_id > 4;
+    
+    IF LEN(@sql) > 0
+    BEGIN
+        PRINT ''Database: ?'';
+        EXEC sp_executesql @sql;
+    END
+END
+'
