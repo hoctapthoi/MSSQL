@@ -154,7 +154,7 @@ Write-Host "Report saved to: $reportFile" -ForegroundColor Cyan
 
 Write-Host "`nExport completed!" -ForegroundColor Green
 
-
+# ============================================ # ============================================ # ============================================ # ============================================
 # ============================================
 # IMPORT MULTIPLE CSV FILES - UNICODE FORMAT
 # ============================================
@@ -212,9 +212,9 @@ foreach ($file in $csvFiles) {
     
     try {
         # ============================================
-        # STEP 0: REMOVE HEADER FROM CSV
+        # STEP 1: REMOVE HEADER FROM CSV
         # ============================================
-        Write-Host "  [0/4] Removing header row..." -ForegroundColor Yellow
+        Write-Host "  [1/4] Removing header row..." -ForegroundColor Yellow
         
         $tempFile = "$InputFolder\$tableName`_no_header.csv"
         
@@ -231,9 +231,9 @@ foreach ($file in $csvFiles) {
         }
         
         # ============================================
-        # STEP 1: PREPARE TABLE
+        # STEP 2: PREPARE TABLE
         # ============================================
-        Write-Host "  [1/4] Preparing table..." -ForegroundColor Yellow
+        Write-Host "  [2/4] Preparing table..." -ForegroundColor Yellow
         
         $prepareSQL = @"
 USE [$Database]
@@ -275,9 +275,9 @@ TRUNCATE TABLE [$tableName]
         Write-Host "        ✓ Disabled $($result.NonClusteredIndexes) non-clustered index(es)" -ForegroundColor Green
         
         # ============================================
-        # STEP 2: IMPORT DATA
+        # STEP 3: IMPORT DATA
         # ============================================
-        Write-Host "  [2/4] Importing data..." -ForegroundColor Yellow
+        Write-Host "  [3/4] Importing data..." -ForegroundColor Yellow
         
         # Use -w (Unicode format) for Vietnamese
         $bcpArgs = @(
@@ -311,9 +311,9 @@ TRUNCATE TABLE [$tableName]
         Write-Host "        ✓ Imported $($result.RowsImported.ToString('N0')) rows in $([math]::Round($importDuration, 2))s" -ForegroundColor Green
         
         # ============================================
-        # STEP 3: REBUILD INDEXES
+        # STEP 4: REBUILD INDEXES
         # ============================================
-        Write-Host "  [3/4] Rebuilding indexes..." -ForegroundColor Yellow
+        Write-Host "  [4/4] Rebuilding indexes..." -ForegroundColor Yellow
         
         $rebuildSQL = @"
 USE [$Database]
