@@ -131,3 +131,75 @@ DROP TABLE #Result;
 ########## kiểm tra kết nối từ SQL sang Oracle ############
 SELECT *
 FROM OPENQUERY(ORACLE_LINK, 'SELECT * FROM schema_name.table_name');
+
+
+########## kiểm tra procedure sử dụng Linked Server ############
+SET NOCOUNT ON
+
+IF OBJECT_ID('tempdb..#Results') IS NOT NULL DROP TABLE #Results
+
+CREATE TABLE #Results (
+    DatabaseName NVARCHAR(128),
+    SchemaName NVARCHAR(128),
+    ObjectName NVARCHAR(128),
+    LinkedServerName NVARCHAR(128),
+    Definition NVARCHAR(MAX)
+)
+
+DECLARE @SQL NVARCHAR(MAX), @DBName NVARCHAR(128)
+
+DECLARE db_cursor CURSOR FOR
+SELECT name FROM sys.databases 
+WHERE state_desc = 'ONLINE' AND name NOT IN ('tempdb') AND HAS_DBACCESS(name) = 1
+
+OPEN db_cursor
+FETCH NEXT FROM db_cursor INTO @DBName
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    BEGIN TRY
+        SET @SQL = N'
+        USE [' + @DBName + N'];
+        INSERT INTO #Results
+        SELECT 
+            DB_NAME(),
+            SCHEMA_NAME(o.schema_id),
+            OBJECT_NAME(m.object_id),
+            CASE 
+                WHEN m.definition LIKE ''%OPENQUERY(XXX,%'' OR m.definition LIKE ''%OPENQUERY([XXX],%'' THEN ''XXX''
+                WHEN m.definition LIKE ''%OPENQUERY(XXXReport,%'' OR m.definition LIKE ''%OPENQUERY([XXXReport],%'' THEN ''XXXReport''
+                ELSE ''Other''
+            END,
+            m.definition
+        FROM sys.sql_modules m
+        INNER JOIN sys.objects o ON m.object_id = o.object_id
+        WHERE m.definition LIKE ''%OPENQUERY%''
+        '
+        EXEC sp_executesql @SQL
+        PRINT 'Scanned: ' + @DBName
+    END TRY
+    BEGIN CATCH
+        PRINT 'Error: ' + @DBName + ' - ' + ERROR_MESSAGE()
+    END CATCH
+    FETCH NEXT FROM db_cursor INTO @DBName
+END
+
+CLOSE db_cursor
+DEALLOCATE db_cursor
+
+-- CTE để filter dễ dàng
+;WITH FilteredResults AS (
+    SELECT 
+        DatabaseName,
+        SchemaName,
+        ObjectName,
+        LinkedServerName,
+        Definition
+    FROM #Results
+)
+SELECT * FROM FilteredResults
+-- WHERE LinkedServerName IN ('XXX','XXXReport')
+-- WHERE DatabaseName = 'ZZZ'
+ORDER BY DatabaseName, ObjectName
+
+DROP TABLE #Results
