@@ -148,7 +148,7 @@ Write-Host "`nDetailed Results:" -ForegroundColor Yellow
 $exportResults | Format-Table -AutoSize
 
 # Export report to CSV
-$reportFile = "$outputFolder\export_report_$(Get-Date -Format 'yyyyMMdd_HHmmss').csv"
+$reportFile = "$outputFolder\export_report_$(Get-Date -Format 'yyyyMMdd_HHmmss').txt"
 $exportResults | Export-Csv -Path $reportFile -NoTypeInformation -Encoding UTF8
 Write-Host "Report saved to: $reportFile" -ForegroundColor Cyan
 
