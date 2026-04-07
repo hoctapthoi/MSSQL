@@ -1,3 +1,4 @@
+--------- compare login, user -----------
 SELECT dp.name AS DatabaseUser,       
   dp.sid AS UserSID,       
   sp.name AS ServerLogin,       
@@ -8,3 +9,6 @@ FROM sys.database_principals dp
   ON dp.sid = sp.sid
 WHERE dp.type_desc = 'SQL_USER';
 
+--------- mapping user ----------------
+select 'alter user [' + loginname + '] with login = [' + loginname + '];'
+from sys.syslogins
