@@ -1,0 +1,10 @@
+SELECT dp.name AS DatabaseUser,       
+  dp.sid AS UserSID,       
+  sp.name AS ServerLogin,       
+  sp.sid AS LoginSID,	   
+  case when dp.sid = sp.sid then 'yes' else  'not'  end as 'same'
+FROM sys.database_principals dp
+  LEFT JOIN sys.server_principals sp       
+  ON dp.sid = sp.sid
+WHERE dp.type_desc = 'SQL_USER';
+
