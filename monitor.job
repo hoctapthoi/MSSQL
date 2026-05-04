@@ -1,0 +1,125 @@
+############# monitor #############
+### create storing table ###
+CREATE TABLE DB_monitor.dbo.QueryAuditLog (
+    id                  BIGINT IDENTITY(1,1) PRIMARY KEY,
+    capture_time        DATETIME NOT NULL,
+    sql_text            NVARCHAR(MAX),
+    execution_plan      XML,              
+    session_id          SMALLINT,
+    blocked_by          SMALLINT,
+    user_id             INT,
+    status              NVARCHAR(30),
+    host_name           NVARCHAR(128),
+    login_name          NVARCHAR(128),
+    program_name        NVARCHAR(128),
+    command             NVARCHAR(32),
+    cpu_time            INT,
+    total_elapsed_time  INT,
+    wait_type           NVARCHAR(60),
+    wait_time           INT
+);
+
+### create procedure ###
+CREATE PROCEDURE DB_monitor.dbo.InsertQueryAuditLog
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    INSERT INTO dbo.QueryAuditLog (
+        capture_time, sql_text, execution_plan,
+        session_id, blocked_by, user_id, status,
+        host_name, login_name, program_name, command,
+        cpu_time, total_elapsed_time, wait_type, wait_time
+    )
+    SELECT
+        getdate(),
+        sqltext.TEXT,
+        query_plan.query_plan,
+        req.session_id,
+        req.blocking_session_id,
+        req.user_id,
+        req.status,
+        sess.host_name,
+        sess.login_name,
+        sess.program_name,
+        req.command,
+        req.cpu_time,
+        req.total_elapsed_time,
+        req.wait_type,
+        req.wait_time
+    FROM sys.dm_exec_requests req WITH (NOLOCK)
+    INNER JOIN sys.dm_exec_sessions sess WITH (NOLOCK)
+        ON sess.session_id = req.session_id
+    CROSS APPLY sys.dm_exec_sql_text(sql_handle) AS sqltext
+    CROSS APPLY sys.dm_exec_query_plan(plan_handle) AS query_plan
+    WHERE req.session_id <> @@SPID;
+
+END;
+GO
+
+### create capture job ###
+-- =============================================
+-- JOB 1: Capture query audit each 2 minutes
+-- =============================================
+USE msdb;
+GO
+
+EXEC sp_add_job
+    @job_name = N'Job_InsertQueryAuditLog';
+
+EXEC sp_add_jobstep
+    @job_name = N'Job_InsertQueryAuditLog',
+    @step_name = N'Capture Query Audit',
+    @subsystem = N'TSQL',
+    @database_name = N'DB_monitor',
+    @command = N'
+        EXEC dbo.InsertQueryAuditLog;
+    ';
+
+EXEC sp_add_schedule
+    @schedule_name = N'Every2Minutes',
+    @freq_type = 4,          -- daily
+    @freq_interval = 1,
+    @freq_subday_type = 4,   -- minutes
+    @freq_subday_interval = 2;
+
+EXEC sp_attach_schedule
+    @job_name = N'Job_InsertQueryAuditLog',
+    @schedule_name = N'Every2Minutes';
+
+EXEC sp_add_jobserver
+    @job_name = N'Job_InsertQueryAuditLog';
+GO
+
+
+-- =============================================
+-- JOB 2: Cleanup log order 7 days
+-- =============================================
+EXEC sp_add_job
+    @job_name = N'Job_CleanupQueryAuditLog';
+
+EXEC sp_add_jobstep
+    @job_name = N'Job_CleanupQueryAuditLog',
+    @step_name = N'Delete Old Audit Data',
+    @subsystem = N'TSQL',
+    @database_name = N'DB_monitor',
+    @command = N'
+        DELETE FROM dbo.QueryAuditLog
+        WHERE capture_time < DATEADD(DAY, -7, GETDATE());
+    ';
+
+EXEC sp_add_schedule
+    @schedule_name = N'DailyMidnight',
+    @freq_type = 4,          -- daily
+    @freq_interval = 1,
+    @freq_subday_type = 1,   -- once per day
+    @active_start_time = 0;  -- 00:00:00
+
+EXEC sp_attach_schedule
+    @job_name = N'Job_CleanupQueryAuditLog',
+    @schedule_name = N'DailyMidnight';
+
+EXEC sp_add_jobserver
+    @job_name = N'Job_CleanupQueryAuditLog';
+GO
+
