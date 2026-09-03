@@ -1,5 +1,5 @@
-Create proc [dbo].[truncate] @table nvarchar (200)
-with execute as 'xxxx'  --- xxxx is a sysadmin user----
+Create proc [dbo].[usp_truncate] @table nvarchar (200)
+with execute as owner
 as 
 begin 
  -- set nocount on added to prevent extra result sets from 
@@ -7,3 +7,11 @@ begin
    Set Nocount on;
   exec ('Truncate table ' + @table)
 END
+
+
+use [xxx]
+GO
+GRANT EXECUTE ON [dbo].[usp_truncate] TO [user]
+GO
+
+EXEC usp_truncate table1;
