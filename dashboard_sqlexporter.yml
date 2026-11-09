@@ -1,0 +1,936 @@
+# A collector defining standard metrics for Microsoft SQL Server.
+#
+# It is required that the SQL Server user has the following permissions:
+#
+#   GRANT VIEW ANY DEFINITION TO <user>
+#   GRANT VIEW SERVER STATE TO <user>
+#
+collector_name: mssql_standard
+
+# Similar to global.min_interval, but applies to the queries defined by this collector only.
+#min_interval: 0s
+
+metrics:
+  - metric_name: mssql_up
+    type: gauge
+    help: 'SQL Server status (1 = Up, 0 = Down/Error)'
+    values: [is_up]
+    query: |
+      SELECT 1 AS is_up;
+
+  - metric_name: mssql_local_time_seconds
+    type: gauge
+    help: 'Local time in seconds since epoch (Unix time).'
+    values: [unix_time]
+    query: |
+      SELECT DATEDIFF(second, '19700101', GETUTCDATE()) AS unix_time
+
+  - metric_name: mssql_connections
+    type: gauge
+    help: 'Number of active connections.'
+    key_labels:
+      - db
+    values: [count]
+    query: |
+      SELECT DB_NAME(sp.dbid) AS db, COUNT(sp.spid) AS count
+      FROM sys.sysprocesses sp
+      GROUP BY DB_NAME(sp.dbid)
+
+  - metric_name: mssql_database_state
+    type: gauge
+    help: 'Database state (0=ONLINE, 1=RESTORING, 2=RECOVERING, 3=RECOVERY_PENDING, 4=SUSPECT, 5=EMERGENCY, 6=OFFLINE).'
+    key_labels:
+      - db
+    values: [cntr_value]
+    query: |
+      SELECT name AS db, state AS cntr_value
+      FROM sys.databases
+
+  - metric_name: mssql_sql_trace_io_provider_lock_waits
+    type: counter
+    help: 'Total number of waits for the File IO Provider (SQL Trace) lock.'
+    values: [cntr_value]
+    query: |
+      SELECT cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%General Statistics%'
+        AND counter_name = 'SQL Trace IO Provider Lock Waits'
+
+  - metric_name: mssql_longest_transaction_running_seconds
+    type: gauge
+    help: 'The duration, in seconds, of the currently longest running transaction.'
+    values: [cntr_value]
+    query: |
+      SELECT cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Transactions%'
+        AND counter_name = 'Longest Transaction Running Time'
+
+  - metric_name: mssql_active_temp_tables
+    type: gauge
+    help: 'Number of temporary tables/table variables currently active.'
+    values: [cntr_value]
+    query: |
+      SELECT cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%General Statistics%'
+        AND counter_name = 'Active Temp Tables'
+
+  - metric_name: mssql_tempdb_free_space_bytes
+    type: gauge
+    help: 'Amount of free space in tempdb, in bytes.'
+    values: [cntr_value]
+    query: |
+      SELECT CAST(cntr_value AS bigint) * 1024 AS cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Transactions%'
+        AND counter_name = 'Free Space in tempdb (KB)'
+
+  - metric_name: mssql_logical_connections
+    type: gauge
+    help: 'Number of logical connections to the SQL Server instance.'
+    values: [cntr_value]
+    query: |
+      SELECT cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%General Statistics%'
+        AND counter_name = 'Logical Connections'
+
+  - metric_name: mssql_connection_resets
+    type: counter
+    help: 'Total number of connection resets (connection pool reuse).'
+    values: [cntr_value]
+    query: |
+      SELECT cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%General Statistics%'
+        AND counter_name = 'Connection Reset/sec'
+
+  - metric_name: mssql_connection_memory_bytes
+    type: gauge
+    help: 'Total amount of dynamic memory the server is using for maintaining connections, in bytes.'
+    values: [cntr_value]
+    query: |
+      SELECT CAST(cntr_value AS bigint) * 1024 AS cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Memory Manager%'
+        AND counter_name = 'Connection Memory (KB)'
+
+  - metric_name: mssql_data_files_size_bytes
+    type: gauge
+    help: 'Current size of all data files per database, in bytes.'
+    key_labels:
+      - db
+    values: [cntr_value]
+    query: |
+      SELECT
+        RTRIM(instance_name) AS db,
+        CAST(cntr_value AS bigint) * 1024 AS cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Databases%'
+        AND counter_name = 'Data File(s) Size (KB)'
+        AND instance_name NOT IN ('_Total', 'mssqlsystemresource')
+
+  - metric_name: mssql_total_server_memory_bytes
+    type: gauge
+    help: 'Total amount of memory the SQL Server instance has committed, in bytes.'
+    values: [cntr_value]
+    query: |
+      SELECT CAST(cntr_value AS bigint) * 1024 AS cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Memory Manager%'
+        AND counter_name = 'Total Server Memory (KB)'
+
+  - metric_name: mssql_target_server_memory_bytes
+    type: gauge
+    help: 'Ideal amount of memory the SQL Server instance can consume, in bytes.'
+    values: [cntr_value]
+    query: |
+      SELECT CAST(cntr_value AS bigint) * 1024 AS cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Memory Manager%'
+        AND counter_name = 'Target Server Memory (KB)'
+
+  - metric_name: mssql_stolen_server_memory_bytes
+    type: gauge
+    help: 'Amount of memory stolen from the buffer pool for other purposes, in bytes.'
+    values: [cntr_value]
+    query: |
+      SELECT CAST(cntr_value AS bigint) * 1024 AS cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Memory Manager%'
+        AND counter_name = 'Stolen Server Memory (KB)'
+
+  - metric_name: mssql_free_list_stalls
+    type: counter
+    help: 'Total number of requests that had to wait for a free page in the buffer pool.'
+    values: [cntr_value]
+    query: |
+      SELECT cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Buffer Manager%'
+        AND counter_name = 'Free list stalls/sec'
+
+  - metric_name: mssql_memory_grants_pending
+    type: gauge
+    help: 'Number of processes waiting for a memory grant.'
+    values: [cntr_value]
+    query: |
+      SELECT cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Memory Manager%'
+        AND counter_name = 'Memory Grants Pending'
+
+  - metric_name: mssql_log_used_percent
+    type: gauge
+    help: 'Percentage of the transaction log space used per database.'
+    key_labels:
+      - db
+    values: [cntr_value]
+    query: |
+      SELECT
+        RTRIM(instance_name) AS db,
+        cntr_value AS cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Databases%'
+        AND counter_name = 'Percent Log Used'
+        AND instance_name NOT IN ('_Total', 'mssqlsystemresource')
+
+  - metric_name: mssql_logins
+    type: counter
+    help: 'Total number of logins started (new connections).'
+    values: [cntr_value]
+    query: |
+      SELECT cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%General Statistics%'
+        AND counter_name = 'Logins/sec'
+
+  - metric_name: mssql_logouts
+    type: counter
+    help: 'Total number of logouts started (closed connections).'
+    values: [cntr_value]
+    query: |
+      SELECT cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%General Statistics%'
+        AND counter_name = 'Logouts/sec'
+
+  - metric_name: mssql_sql_compilations
+    type: counter
+    help: 'Total number of SQL compilations.'
+    values: [cntr_value]
+    query: |
+      SELECT cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%SQL Statistics%'
+        AND counter_name = 'SQL Compilations/sec'
+
+  - metric_name: mssql_sql_recompilations
+    type: counter
+    help: 'Total number of SQL re-compilations.'
+    values: [cntr_value]
+    query: |
+      SELECT cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%SQL Statistics%'
+        AND counter_name = 'SQL Re-Compilations/sec'
+
+  - metric_name: mssql_blocked_processes
+    type: gauge
+    help: 'Number of currently blocked processes.'
+    values: [cntr_value]
+    query: |
+      SELECT cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%General Statistics%'
+        AND counter_name = 'Processes blocked'
+
+  - metric_name: mssql_transactions
+    type: counter
+    help: 'Number of transactions started per database (all transactions).'
+    key_labels:
+      - db
+    values: [cntr_value]
+    query: |
+      SELECT
+        RTRIM(instance_name) AS db,
+        cntr_value AS cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Databases%'
+        AND counter_name = 'Transactions/sec'
+        AND instance_name NOT IN ('_Total', 'mssqlsystemresource')
+
+  - metric_name: mssql_write_transactions
+    type: counter
+    help: 'Number of write transactions started per database (data-modifying only).'
+    key_labels:
+      - db
+    values: [cntr_value]
+    query: |
+      SELECT
+        RTRIM(instance_name) AS db,
+        cntr_value AS cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Databases%'
+        AND counter_name = 'Write Transactions/sec'
+        AND instance_name NOT IN ('_Total', 'mssqlsystemresource')
+
+  - metric_name: mssql_log_flushes
+    type: counter
+    help: 'Number of log flushes per database.'
+    key_labels:
+      - db
+    values: [cntr_value]
+    query: |
+      SELECT
+        RTRIM(instance_name) AS db,
+        cntr_value AS cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Databases%'
+        AND counter_name = 'Log Flushes/sec'
+        AND instance_name NOT IN ('_Total', 'mssqlsystemresource')
+
+  - metric_name: mssql_log_flush_wait_time_seconds
+    type: counter
+    help: 'Total wait time for log flushes per database, in seconds.'
+    key_labels:
+      - db
+    values: [cntr_value]
+    query: |
+      SELECT
+        RTRIM(instance_name) AS db,
+        CAST(cntr_value AS bigint) / 1000.0 AS cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Databases%'
+        AND counter_name = 'Log Flush Wait Time'
+        AND instance_name NOT IN ('_Total', 'mssqlsystemresource')
+
+  - metric_name: mssql_lock_timeouts
+    type: counter
+    help: 'Number of lock requests that timed out, including NOWAIT requests.'
+    key_labels:
+      - resource
+    values: [cntr_value]
+    query: |
+      SELECT
+        RTRIM(instance_name) AS resource,
+        cntr_value AS cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Locks%'
+        AND counter_name = 'Lock Timeouts/sec'
+
+  - metric_name: mssql_group_commit_stall_seconds
+    type: counter
+    help: 'Total group commit stall time per database, in seconds.'
+    key_labels:
+      - db
+    values: [cntr_value]
+    query: |
+      SELECT
+        RTRIM(instance_name) AS db,
+        CAST(cntr_value AS bigint) / 1000000.0 AS cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Databases%'
+        AND counter_name = 'Group Commit Time/sec'
+        AND instance_name NOT IN ('_Total', 'mssqlsystemresource')
+
+  - metric_name: mssql_lock_wait_seconds
+    type: counter
+    help: 'Total time spent waiting for locks per resource type, in seconds.'
+    key_labels:
+      - resource
+    values: [cntr_value]
+    query: |
+      SELECT
+        RTRIM(instance_name) AS resource,
+        CAST(cntr_value AS bigint) / 1000.0 AS cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Locks%'
+        AND counter_name = 'Lock Wait Time (ms)'
+
+  - metric_name: mssql_log_pool_disk_reads
+    type: counter
+    help: 'Number of log pool disk reads per database (log pool cache misses).'
+    key_labels:
+      - db
+    values: [cntr_value]
+    query: |
+      SELECT
+        RTRIM(instance_name) AS db,
+        cntr_value AS cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Databases%'
+        AND counter_name = 'Log Pool Disk Reads/sec'
+        AND instance_name NOT IN ('_Total', 'mssqlsystemresource')
+
+  #
+  # Collected from sys.dm_os_performance_counters
+  #
+
+  - metric_name: mssql_user_connections
+    type: gauge
+    help: 'Total number of user connections to the SQL Server instance.'
+    values: [cntr_value]
+    query: |
+      SELECT cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE counter_name = 'User Connections'
+
+  - metric_name: mssql_page_writes
+    type: counter
+    help: 'Number of physical database page writes issued (from Buffer Manager).'
+    values: [cntr_value]
+    query: |
+      SELECT cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Buffer Manager%'
+        AND counter_name = 'Page writes/sec'
+
+  - metric_name: mssql_page_reads
+    type: counter
+    help: 'Number of physical database page reads issued (from Buffer Manager).'
+    values: [cntr_value]
+    query: |
+      SELECT cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Buffer Manager%'
+        AND counter_name = 'Page reads/sec'
+
+  - metric_name: mssql_buffer_cache_hit_ratio
+    type: gauge
+    help: 'Percentage of pages found in the buffer cache without having to read from disk.'
+    key_labels:
+      - object_name
+    values: [cntr_value]
+    query: |
+      SELECT a.object_name,
+        'BufferCacheHitRatio' AS counter_name,
+        '_Total' AS instance_name,
+        cast(a.cntr_value * ISNULL((100.0 / NULLIF(b.cntr_value,0)),0) AS dec(3, 0)) AS cntr_value
+      FROM sys.dm_os_performance_counters a WITH (NOLOCK)
+      JOIN (
+        SELECT cntr_value, OBJECT_NAME
+        FROM sys.dm_os_performance_counters WITH (NOLOCK)
+        WHERE counter_name = 'Buffer cache hit ratio base'
+      ) b
+        ON a.OBJECT_NAME = b.OBJECT_NAME
+      WHERE a.counter_name = 'Buffer cache hit ratio'
+
+  - metric_name: mssql_plan_cache_hit_ratio
+    type: gauge
+    help: 'Ratio between plan cache hits and lookups (plan reuse) for the plan cache.'
+    key_labels:
+      - object_name
+    values: [cntr_value]
+    query: |
+      SELECT a.object_name,
+        'CacheHitRatio' AS counter_name,
+        '_Total' AS instance_name,
+        cast(a.cntr_value * ISNULL((100.0 / NULLIF(b.cntr_value,0)),0) AS dec(3, 0)) AS cntr_value
+      FROM sys.dm_os_performance_counters a WITH (NOLOCK)
+      JOIN (
+        SELECT cntr_value, OBJECT_NAME
+        FROM sys.dm_os_performance_counters WITH (NOLOCK)
+        WHERE counter_name = 'Cache Hit Ratio base'
+          AND OBJECT_NAME = 'SQLServer' + ':Plan Cache'
+          AND instance_name = '_Total'
+      ) b
+        ON a.OBJECT_NAME = b.OBJECT_NAME
+      WHERE a.counter_name = 'Cache Hit Ratio'
+        AND a.OBJECT_NAME = 'SQLServer' + ':Plan Cache'
+        AND instance_name = '_Total'
+
+  - metric_name: mssql_deadlocks
+    type: counter
+    help: 'Number of lock requests that resulted in a deadlock.'
+    values: [cntr_value]
+    query: |
+      SELECT cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE counter_name = 'Number of Deadlocks/sec' AND instance_name = '_Total'
+
+  - metric_name: mssql_user_errors
+    type: counter
+    help: 'Number of user errors.'
+    values: [cntr_value]
+    query: |
+      SELECT cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE counter_name = 'Errors/sec' AND instance_name = 'User Errors'
+
+  - metric_name: mssql_kill_connection_errors
+    type: counter
+    help: 'Number of severe errors that caused SQL Server to kill the connection.'
+    values: [cntr_value]
+    query: |
+      SELECT cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE counter_name = 'Errors/sec' AND instance_name = 'Kill Connection Errors'
+
+  - metric_name: mssql_page_life_expectancy_seconds
+    type: gauge
+    help: 'The minimum number of seconds a page will stay in the buffer pool on this node without references.'
+    values: [cntr_value]
+    query: |
+      SELECT top(1) cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE counter_name = 'Page life expectancy'
+
+  - metric_name: mssql_batch_requests
+    type: counter
+    help: 'Number of command batches received.'
+    values: [cntr_value]
+    query: |
+      SELECT cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE counter_name = 'Batch Requests/sec'
+
+  - metric_name: mssql_log_growths
+    type: counter
+    help: 'Number of times the transaction log has been expanded, per database.'
+    key_labels:
+      - db
+    values: [cntr_value]
+    query: |
+      SELECT rtrim(instance_name) AS db, cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE counter_name = 'Log Growths' AND instance_name <> '_Total'
+
+  - metric_name: mssql_page_lookups
+    type: counter
+    help: 'Number of requests to find a page in the buffer pool (from Buffer Manager).'
+    values: [cntr_value]
+    query: |
+      SELECT cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Buffer Manager%'
+        AND counter_name = 'Page lookups/sec'
+
+  - metric_name: mssql_read_ahead_pages
+    type: counter
+    help: 'Number of pages read in anticipation of use (read-ahead, from Buffer Manager).'
+    values: [cntr_value]
+    query: |
+      SELECT cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Buffer Manager%'
+        AND counter_name = 'Readahead pages/sec'
+
+  - metric_name: mssql_lazywrites
+    type: counter
+    help: 'Number of buffers written by the lazy writer (from Buffer Manager).'
+    values: [cntr_value]
+    query: |
+      SELECT cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Buffer Manager%'
+        AND counter_name = 'Lazy writes/sec'
+
+  - metric_name: mssql_checkpoint_pages
+    type: counter
+    help: 'Number of pages flushed to disk by a checkpoint operation (from Buffer Manager).'
+    values: [cntr_value]
+    query: |
+      SELECT cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Buffer Manager%'
+        AND counter_name = 'Checkpoint pages/sec'
+
+  - metric_name: mssql_full_scans
+    type: counter
+    help: 'Number of unrestricted full scans of tables or indexes (from Access Methods).'
+    values: [cntr_value]
+    query: |
+      SELECT cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Access Methods%'
+        AND counter_name = 'Full Scans/sec'
+
+  - metric_name: mssql_index_searches
+    type: counter
+    help: 'Number of index searches (from Access Methods).'
+    values: [cntr_value]
+    query: |
+      SELECT cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Access Methods%'
+        AND counter_name = 'Index Searches/sec'
+
+  - metric_name: mssql_page_splits
+    type: counter
+    help: 'Number of page splits resulting from index page overflows (from Access Methods).'
+    values: [cntr_value]
+    query: |
+      SELECT cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Access Methods%'
+        AND counter_name = 'Page Splits/sec'
+
+  - metric_name: mssql_sql_cache_memory_bytes
+    type: gauge
+    help: 'Amount of dynamic memory the server is using for the dynamic SQL cache, in bytes.'
+    values: [cntr_value]
+    query: |
+      SELECT CAST(cntr_value AS bigint) * 1024 AS cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Memory Manager%'
+        AND counter_name = 'SQL Cache Memory (KB)'
+
+  - metric_name: mssql_optimizer_memory_bytes
+    type: gauge
+    help: 'Amount of dynamic memory the server is using for query optimization, in bytes.'
+    values: [cntr_value]
+    query: |
+      SELECT CAST(cntr_value AS bigint) * 1024 AS cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Memory Manager%'
+        AND counter_name = 'Optimizer Memory (KB)'
+
+  - metric_name: mssql_log_pool_memory_bytes
+    type: gauge
+    help: 'Amount of dynamic memory the server is using for the log pool, in bytes.'
+    values: [cntr_value]
+    query: |
+      SELECT CAST(cntr_value AS bigint) * 1024 AS cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Memory Manager%'
+        AND counter_name = 'Log Pool Memory (KB)'
+
+  - metric_name: mssql_lock_memory_bytes
+    type: gauge
+    help: 'Total amount of dynamic memory the server is using for locks, in bytes.'
+    values: [cntr_value]
+    query: |
+      SELECT CAST(cntr_value AS bigint) * 1024 AS cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Memory Manager%'
+        AND counter_name = 'Lock Memory (KB)'
+
+  - metric_name: mssql_database_cache_memory_bytes
+    type: gauge
+    help: 'Amount of memory the server is using for the database pages cache, in bytes.'
+    values: [cntr_value]
+    query: |
+      SELECT CAST(cntr_value AS bigint) * 1024 AS cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Memory Manager%'
+        AND counter_name = 'Database Cache Memory (KB)'
+
+  - metric_name: mssql_lock_requests
+    type: counter
+    help: 'Number of new locks and lock conversions requested from the lock manager.'
+    key_labels:
+      - resource
+    values: [cntr_value]
+    query: |
+      SELECT
+        RTRIM(instance_name) AS resource,
+        cntr_value AS cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Locks%'
+        AND counter_name = 'Lock Requests/sec'
+
+  - metric_name: mssql_lock_waits
+    type: counter
+    help: 'Number of lock requests that required the caller to wait.'
+    key_labels:
+      - resource
+    values: [cntr_value]
+    query: |
+      SELECT
+        RTRIM(instance_name) AS resource,
+        cntr_value AS cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Locks%'
+        AND counter_name = 'Lock Waits/sec'
+
+  - metric_name: mssql_bulk_copy_rows
+    type: counter
+    help: 'Number of rows bulk copied per database.'
+    key_labels:
+      - db
+    values: [cntr_value]
+    query: |
+      SELECT
+        RTRIM(instance_name) AS db,
+        cntr_value AS cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Databases%'
+        AND counter_name = 'Bulk Copy Rows/sec'
+        AND instance_name NOT IN ('_Total', 'mssqlsystemresource')
+
+  - metric_name: mssql_log_files_size_bytes
+    type: gauge
+    help: 'Current size of all transaction log files per database, in bytes.'
+    key_labels:
+      - db
+    values: [cntr_value]
+    query: |
+      SELECT
+        RTRIM(instance_name) AS db,
+        CAST(cntr_value AS bigint) * 1024 AS cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Databases%'
+        AND counter_name = 'Log File(s) Size (KB)'
+        AND instance_name NOT IN ('_Total', 'mssqlsystemresource')
+
+  - metric_name: mssql_log_pool_cache_misses
+    type: counter
+    help: 'Number of log pool cache misses per database.'
+    key_labels:
+      - db
+    values: [cntr_value]
+    query: |
+      SELECT
+        RTRIM(instance_name) AS db,
+        cntr_value AS cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Databases%'
+        AND counter_name = 'Log Pool Cache Misses/sec'
+        AND instance_name NOT IN ('_Total', 'mssqlsystemresource')
+
+  - metric_name: mssql_log_pool_empty_free_pool_pushes
+    type: counter
+    help: 'Number of log pool empty free pool pushes per database.'
+    key_labels:
+      - db
+    values: [cntr_value]
+    query: |
+      SELECT
+        RTRIM(instance_name) AS db,
+        cntr_value AS cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Databases%'
+        AND counter_name = 'Log Pool Push Empty FreePool/sec'
+        AND instance_name NOT IN ('_Total', 'mssqlsystemresource')
+
+  - metric_name: mssql_log_pool_hash_deletes
+    type: counter
+    help: 'Number of log pool hash deletes per database.'
+    key_labels:
+      - db
+    values: [cntr_value]
+    query: |
+      SELECT
+        RTRIM(instance_name) AS db,
+        cntr_value AS cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Databases%'
+        AND counter_name = 'Log Pool Hash Deletes/sec'
+        AND instance_name NOT IN ('_Total', 'mssqlsystemresource')
+
+  - metric_name: mssql_log_pool_hash_inserts
+    type: counter
+    help: 'Number of log pool hash inserts per database.'
+    key_labels:
+      - db
+    values: [cntr_value]
+    query: |
+      SELECT
+        RTRIM(instance_name) AS db,
+        cntr_value AS cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Databases%'
+        AND counter_name = 'Log Pool Hash Inserts/sec'
+        AND instance_name NOT IN ('_Total', 'mssqlsystemresource')
+
+  - metric_name: mssql_log_pool_log_scan_pushes
+    type: counter
+    help: 'Number of log pool log scan pushes per database.'
+    key_labels:
+      - db
+    values: [cntr_value]
+    query: |
+      SELECT
+        RTRIM(instance_name) AS db,
+        cntr_value AS cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Databases%'
+        AND counter_name = 'Log Pool Log Scan Pushes/sec'
+        AND instance_name NOT IN ('_Total', 'mssqlsystemresource')
+
+  - metric_name: mssql_log_pool_requests
+    type: counter
+    help: 'Number of log pool requests per database.'
+    key_labels:
+      - db
+    values: [cntr_value]
+    query: |
+      SELECT
+        RTRIM(instance_name) AS db,
+        cntr_value AS cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Databases%'
+        AND counter_name = 'Log Pool Requests/sec'
+        AND instance_name NOT IN ('_Total', 'mssqlsystemresource')
+
+  - metric_name: mssql_log_pool_requests_old_vlf
+    type: counter
+    help: 'Number of log pool requests for old VLF per database.'
+    key_labels:
+      - db
+    values: [cntr_value]
+    query: |
+      SELECT
+        RTRIM(instance_name) AS db,
+        cntr_value AS cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Databases%'
+        AND counter_name = 'Log Pool Requests Old VLF/sec'
+        AND instance_name NOT IN ('_Total', 'mssqlsystemresource')
+
+  - metric_name: mssql_log_pool_total_active_log_bytes
+    type: gauge
+    help: 'Total active log size in the log pool per database, in bytes.'
+    key_labels:
+      - db
+    values: [cntr_value]
+    query: |
+      SELECT
+        RTRIM(instance_name) AS db,
+        CAST(cntr_value AS bigint) AS cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Databases%'
+        AND counter_name = 'Log Pool Total Active Log Size'
+        AND instance_name NOT IN ('_Total', 'mssqlsystemresource')
+
+  - metric_name: mssql_log_pool_total_shared_pool_bytes
+    type: gauge
+    help: 'Total shared pool size in the log pool per database, in bytes.'
+    key_labels:
+      - db
+    values: [cntr_value]
+    query: |
+      SELECT
+        RTRIM(instance_name) AS db,
+        CAST(cntr_value AS bigint) AS cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Databases%'
+        AND counter_name = 'Log Pool Total Shared Pool Size'
+        AND instance_name NOT IN ('_Total', 'mssqlsystemresource')
+
+  #
+  # Collected from sys.dm_io_virtual_file_stats
+  #
+  - metric_name: mssql_io_stall_seconds
+    type: counter
+    help: 'Stall time in seconds per database and I/O operation.'
+    key_labels:
+      - db
+    value_label: operation
+    values:
+      - read
+      - write
+    query_ref: mssql_io_stall
+
+  - metric_name: mssql_io_stall_total_seconds
+    type: counter
+    help: 'Total stall time in seconds per database.'
+    key_labels:
+      - db
+    values:
+      - io_stall
+    query_ref: mssql_io_stall
+
+  #
+  # Collected from sys.dm_os_process_memory
+  #
+  - metric_name: mssql_resident_memory_bytes
+    type: gauge
+    help: 'SQL Server resident memory size (AKA working set).'
+    values: [resident_memory_bytes]
+    query_ref: mssql_process_memory
+
+  - metric_name: mssql_virtual_memory_bytes
+    type: gauge
+    help: 'SQL Server committed virtual memory size.'
+    values: [virtual_memory_bytes]
+    query_ref: mssql_process_memory
+
+  - metric_name: mssql_memory_utilization_percentage
+    type: gauge
+    help: 'The percentage of committed memory that is in the working set.'
+    values: [memory_utilization_percentage]
+    query_ref: mssql_process_memory
+
+  - metric_name: mssql_page_fault_count
+    type: counter
+    help: 'The number of page faults that were incurred by the SQL Server process.'
+    values: [page_fault_count]
+    query_ref: mssql_process_memory
+
+  - metric_name: mssql_tempdb_recovery_unit_ids_generated
+    type: counter
+    help: 'Number of duplicate tempdb recovery unit IDs generated.'
+    values: [cntr_value]
+    query: |
+      SELECT cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%General Statistics%'
+        AND counter_name = 'Tempdb recovery unit id'
+
+  - metric_name: mssql_log_files_used_size_bytes
+    type: gauge
+    help: 'Used size of all transaction log files per database, in bytes.'
+    key_labels:
+      - db
+    values: [cntr_value]
+    query: |
+      SELECT
+        RTRIM(instance_name) AS db,
+        CAST(cntr_value AS bigint) * 1024 AS cntr_value
+      FROM sys.dm_os_performance_counters WITH (NOLOCK)
+      WHERE object_name LIKE '%Databases%'
+        AND counter_name = 'Log File(s) Used Size (KB)'
+        AND instance_name NOT IN ('_Total', 'mssqlsystemresource')
+
+  #
+  # Collected from sys.dm_os_sys_memory
+  #
+  - metric_name: mssql_os_memory
+    type: gauge
+    help: 'OS physical memory, used and available.'
+    value_label: 'state'
+    values: [used, available]
+    query: |
+      SELECT
+        (total_physical_memory_kb - available_physical_memory_kb) * 1024 AS used,
+        available_physical_memory_kb * 1024 AS available
+      FROM sys.dm_os_sys_memory
+
+  - metric_name: mssql_os_page_file
+    type: gauge
+    help: 'OS page file, used and available.'
+    value_label: 'state'
+    values: [used, available]
+    query: |
+      SELECT
+        (total_page_file_kb - available_page_file_kb) * 1024 AS used,
+        available_page_file_kb * 1024 AS available
+      FROM sys.dm_os_sys_memory
+
+queries:
+  # Populates `mssql_io_stall` and `mssql_io_stall_total`
+  - query_name: mssql_io_stall
+    query: |
+      SELECT
+        cast(DB_Name(a.database_id) as varchar) AS [db],
+        sum(io_stall_read_ms) / 1000.0 AS [read],
+        sum(io_stall_write_ms) / 1000.0 AS [write],
+        sum(io_stall) / 1000.0 AS io_stall
+      FROM
+        sys.dm_io_virtual_file_stats(null, null) a
+      INNER JOIN sys.master_files b ON a.database_id = b.database_id AND a.file_id = b.file_id
+      GROUP BY a.database_id
+
+  # Populates `mssql_resident_memory_bytes`, `mssql_virtual_memory_bytes`, `mssql_memory_utilization_percentage` and
+  # `mssql_page_fault_count`.
+  - query_name: mssql_process_memory
+    query: |
+      SELECT
+        physical_memory_in_use_kb * 1024 AS resident_memory_bytes,
+        virtual_address_space_committed_kb * 1024 AS virtual_memory_bytes,
+        memory_utilization_percentage,
+        page_fault_count
+      FROM sys.dm_os_process_memory
